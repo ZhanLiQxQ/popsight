@@ -1,0 +1,6 @@
+{
+  "name": "PopSight: CPG Agent Intelligence",
+  "description": "Multi-agent dashboard for trend discovery, private label opportunities, and manufacturer outreach for Prince of Peace.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["AI-powered Product Discovery", "Trend Velocity Analysis", "Multi-Agent Intelligence"]
+}
