@@ -60,7 +60,7 @@ async def bootstrap(user_id: str = "default-user") -> BootstrapResponse:
 
 @app.post("/api/scan", response_model=ScanResponse)
 async def scan_market(request: ScanRequest) -> ScanResponse:
-    if not settings.gemini_api_key:
+    if not settings.gemini_api_key and not settings.allow_demo_mode_without_llm_key:
         raise HTTPException(status_code=500, detail="Missing GEMINI_API_KEY or GOOGLE_API_KEY.")
 
     await graph_service.scan_topic(user_id=request.userId, topic=request.topic)

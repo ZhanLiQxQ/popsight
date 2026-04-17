@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any
-import hashlib
 
 from google import genai
 from google.genai import types as google_types
+from google.genai.errors import ClientError
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 
 from .config import settings
 from .schemas import MacroSuggestionPayload
@@ -71,28 +73,101 @@ class LLMService:
                     growthIndicator="Positive",
                 ),
             ]
-        grounding_tool = google_types.Tool(google_search=google_types.GoogleSearch())
+        assert self.chat_model is not None
 
-        response = self.client.models.generate_content(
-            model=settings.scan_model,
-            contents=(
-                "Identify 5 high-velocity CPG item categories worth scanning next for a US importer. "
-                "Focus on Asia-forward, under-distributed categories.\n\n"
-                "Return ONLY valid JSON as an array of objects with keys: "
-                "category, reason, region, growthIndicator."
-            ),
-            config=google_types.GenerateContentConfig(
-                tools=[grounding_tool],
-                system_instruction=(
-                    "You are MacroScout for PopSight. Use current April 2026 market context and "
-                    "prioritize categories with strong signal, concrete buyer relevance, and specific "
-                    "regional origin."
-                ),
-            ),
+        prompt = (
+            "You are MacroScout for a CPG importer.\n"
+            "Task: generate EXACTLY 5 pan-Asia CPG macro trends that are specific and actionable.\n"
+            "Constraints:\n"
+            "- Each trend must be a concrete product-style/format, not a generic category.\n"
+            '- category example format: "Herbal Sparkling Water", "Yuzu Collagen Jelly Drink".\n'
+            "- Keep them plausible for 2026 and relevant for US importing.\n"
+            "- Return ONLY valid JSON: an array of 5 objects.\n"
+            "- Keys: category, reason, region, growthIndicator.\n"
+            "- region should be a specific sub-region or country cluster (e.g., 'Japan', 'Korea', 'SEA', 'Taiwan', 'China').\n"
+            "- growthIndicator should be a short phrase like 'Rising', 'Explosive', 'Steady', 'Early'.\n"
         )
 
-        payload = self._extract_json(response.text, default=[])
-        return [MacroSuggestionPayload.model_validate(item) for item in payload]
+        try:
+            result = await self.chat_model.ainvoke(prompt)
+        except Exception:
+            # If rate-limited, fall back to a deterministic placeholder set to keep UX unblocked.
+            return [
+                MacroSuggestionPayload(
+                    category="Herbal Sparkling Water",
+                    reason="Low sugar + functional positioning; strong fit for pan-Asia flavor cues.",
+                    region="Japan/Korea",
+                    growthIndicator="Rising",
+                ),
+                MacroSuggestionPayload(
+                    category="Yuzu Collagen Jelly Drink",
+                    reason="Portable texture-drink format with beauty/functional framing.",
+                    region="Japan",
+                    growthIndicator="Rising",
+                ),
+                MacroSuggestionPayload(
+                    category="Coconut Water + Electrolyte Sachets",
+                    reason="Hydration booster add-on format; easy import bundle strategy.",
+                    region="SEA",
+                    growthIndicator="Steady",
+                ),
+                MacroSuggestionPayload(
+                    category="Tea-Based Probiotic Soda",
+                    reason="Soda replacement with gut-health claim adjacency.",
+                    region="Korea/Taiwan",
+                    growthIndicator="Early",
+                ),
+                MacroSuggestionPayload(
+                    category="Spicy Umami Snack Mix (Seaweed/Nuts)",
+                    reason="Cross-over snack profile; good for Asian grocery + mainstream trial.",
+                    region="China/Taiwan",
+                    growthIndicator="Rising",
+                ),
+            ]
+        text = getattr(result, "content", None) or getattr(result, "text", None) or str(result)
+        payload = self._extract_json(text if isinstance(text, str) else str(text), default=[])
+        if not isinstance(payload, list):
+            payload = []
+        validated: list[MacroSuggestionPayload] = []
+        for item in payload[:5]:
+            try:
+                validated.append(MacroSuggestionPayload.model_validate(item))
+            except Exception:
+                continue
+        return validated[:5]
+
+    async def web_snippets(self, query: str, *, max_items: int = 8) -> list[str]:
+        """
+        Use Google Search grounding once to retrieve a compact set of snippets.
+        This is the only place we should hit external web search in the deep-dive graph.
+        """
+        self.ensure_clients()
+        if self.demo_mode:
+            return [f"Demo snippet for query: {query}"]
+
+        assert self.client is not None
+        grounding_tool = google_types.Tool(google_search=google_types.GoogleSearch())
+        try:
+            response = self.client.models.generate_content(
+                model=settings.scan_model,
+                contents=(
+                    f"Search the web for: {query}\n"
+                    f"Return a compact list of up to {max_items} factual snippets.\n"
+                    "Each item should be one line string formatted as: 'SOURCE: <site> | <snippet>'.\n"
+                    "Return ONLY valid JSON: an array of strings."
+                ),
+                config=google_types.GenerateContentConfig(tools=[grounding_tool]),
+            )
+            payload = self._extract_json(response.text, default=[])
+            if isinstance(payload, list):
+                items = [str(x).strip() for x in payload if str(x).strip()]
+                return items[:max_items]
+            text = str(response.text or "").strip()
+            return [text][:max_items] if text else []
+        except Exception as e:
+            # 429/503 and other transient failures should not crash the scan graph.
+            status = getattr(e, "status_code", "")
+            return [f"SOURCE: gemini | crawler_error: {status} {str(e)[:160]}"]
 
     async def run_grounded_scan(self, topic: str) -> dict[str, Any]:
         self.ensure_clients()

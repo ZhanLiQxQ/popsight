@@ -27,7 +27,7 @@ class Settings:
     )
     scan_model: str = os.getenv("POPSIGHT_SCAN_MODEL", "gemini-2.5-flash")
     chat_model: str = os.getenv("POPSIGHT_CHAT_MODEL", "gemini-2.5-flash")
-    auto_bootstrap_macros: bool = os.getenv("POPSIGHT_AUTO_BOOTSTRAP_MACROS", "false").strip().lower() in {
+    auto_bootstrap_macros: bool = os.getenv("POPSIGHT_AUTO_BOOTSTRAP_MACROS", "true").strip().lower() in {
         "1",
         "true",
         "yes",
