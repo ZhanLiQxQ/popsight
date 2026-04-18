@@ -8,3 +8,4 @@ langchain-google-genai>=4.2.2,<5
 langchain-mcp-adapters>=0.2.2,<1
 mcp[cli]>=1.12,<2
 psycopg[binary]>=3.2,<4
+pytrends
