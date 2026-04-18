@@ -22,6 +22,19 @@ class LLMService:
         self.demo_mode = False
 
     def ensure_clients(self) -> None:
+        if settings.ollama_base_url:
+            if self.chat_model is None:
+                from langchain_ollama import ChatOllama
+
+                self.chat_model = ChatOllama(
+                    model=settings.chat_model,
+                    base_url=settings.ollama_base_url.rstrip("/"),
+                    temperature=0.2,
+                )
+            if settings.gemini_api_key and self.client is None:
+                self.client = genai.Client(api_key=settings.gemini_api_key)
+            return
+
         if not settings.gemini_api_key:
             if settings.allow_demo_mode_without_llm_key and settings.app_env != "production":
                 self.demo_mode = True

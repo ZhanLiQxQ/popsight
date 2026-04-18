@@ -4,7 +4,9 @@ name: popsight
 services:
   backend:
     image: popsight-backend:latest
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     environment:

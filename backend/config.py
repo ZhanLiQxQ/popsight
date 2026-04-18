@@ -14,6 +14,33 @@ DATA_DIR.mkdir(exist_ok=True)
 load_dotenv(ROOT_DIR / ".env")
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return float(str(raw).strip())
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str = os.getenv("APP_ENV", "development")
@@ -42,6 +69,20 @@ class Settings:
 
     qdrant_url: str = os.getenv("POPSIGHT_QDRANT_URL", "http://localhost:6333")
     qdrant_api_key: str = os.getenv("POPSIGHT_QDRANT_API_KEY", "")
+    ollama_base_url: str = os.getenv("POPSIGHT_OLLAMA_URL", "").strip()
+    serpapi_api_key: str = os.getenv("SERPAPI_API_KEY", "")
+    gliner_enabled: bool = os.getenv("POPSIGHT_GLINER_ENABLED", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    gliner_model_id: str = os.getenv("POPSIGHT_GLINER_MODEL_ID", "urchade/gliner_small-v2.1")
+    gliner_threshold: float = _env_float("POPSIGHT_GLINER_THRESHOLD", 0.35)
+    gliner_max_input_chars: int = _env_int("POPSIGHT_GLINER_MAX_INPUT_CHARS", 1500)
+    gliner_batch_size: int = _env_int("POPSIGHT_GLINER_BATCH_SIZE", 8)
+    gliner_console_samples: int = _env_int("POPSIGHT_GLINER_CONSOLE_SAMPLES", 3)
+    debug_agent_inputs: bool = _env_bool("POPSIGHT_DEBUG_AGENT_INPUTS", False)
 
 
 settings = Settings()

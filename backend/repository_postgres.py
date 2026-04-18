@@ -548,6 +548,11 @@ class PostgresRepository:
 
         return self.get_memory(memory_id)
 
+    def delete_memory(self, memory_id: str) -> bool:
+        with self.connect() as cur:
+            cur.execute("DELETE FROM memory_items WHERE id = %s", (memory_id,))
+            return cur.rowcount > 0
+
     def search_memories(self, *, user_id: str, query: str, limit: int = 5) -> list[MemoryPayload]:
         search_value = f"%{query.strip()}%"
         with self.connect() as cur:
