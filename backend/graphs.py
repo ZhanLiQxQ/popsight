@@ -186,6 +186,10 @@ class GraphService:
             message=f'Crawled {len(queries)} queries and collected {len(all_snippets)} snippets for "{topic}".',
             log_type="info",
         )
+        print("=== MARKET CRAWLER OUTPUT ===")
+        for s in all_snippets[:5]:
+            print(s)
+        print("=== END ===")
         return {"raw_market_data": all_snippets}
 
     async def _trend_analyst(self, state: DeepDiveState) -> DeepDiveState:
