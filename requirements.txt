@@ -8,6 +8,7 @@ langchain-google-genai>=4.2.2,<5
 langchain-mcp-adapters>=0.2.2,<1
 mcp[cli]>=1.12,<2
 psycopg[binary]>=3.2,<4
+langchain-ollama>=0.2,<1
 qdrant-client>=1.9,<1.15
 pypdf>=4.0,<5
 openpyxl>=3.1,<4

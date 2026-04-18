@@ -42,6 +42,7 @@ class Settings:
 
     qdrant_url: str = os.getenv("POPSIGHT_QDRANT_URL", "http://localhost:6333")
     qdrant_api_key: str = os.getenv("POPSIGHT_QDRANT_API_KEY", "")
+    ollama_base_url: str = os.getenv("POPSIGHT_OLLAMA_URL", "")
 
 
 settings = Settings()

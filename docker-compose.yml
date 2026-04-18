@@ -16,6 +16,9 @@ services:
       # Pass through from your local `.env` (docker compose auto-loads it).
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
+      POPSIGHT_CHAT_MODEL: "${POPSIGHT_CHAT_MODEL:-gemini-2.5-flash}"
+      POPSIGHT_SCAN_MODEL: "${POPSIGHT_SCAN_MODEL:-gemini-2.5-flash}"
+      POPSIGHT_OLLAMA_URL: "${POPSIGHT_OLLAMA_URL:-}"
     volumes:
       - ./data:/app/data
     depends_on:

@@ -199,20 +199,28 @@ def load_sales_history(top_n: int = 200) -> list[dict]:
     return chunks
 
 
+def _is_readable(text: str) -> bool:
+    """Return True if the page has mostly ASCII-printable characters."""
+    if len(text) < 50:
+        return False
+    ascii_count = sum(1 for c in text if ord(c) < 128 and c.isprintable())
+    return ascii_count / len(text) > 0.85
+
+
 def load_catalog_pdf() -> list[dict]:
-    """POP_Catalog_2024.pdf — one chunk per non-empty page."""
+    """POP_Catalog_2024.pdf — one chunk per readable page."""
     reader = pypdf.PdfReader(str(DATA_DIR / "POP_Catalog_2024.pdf"))
     chunks = []
     for i, page in enumerate(reader.pages):
         text = " ".join((page.extract_text() or "").split())
-        if len(text) < 50:
+        if not _is_readable(text):
             continue
         chunks.append({
             "content": f"[Catalog p{i + 1}] {text[:1200]}",
             "source": "Catalog",
             "page": i + 1,
         })
-    print(f"Catalog PDF:          {len(chunks)} pages")
+    print(f"Catalog PDF:          {len(chunks)} readable pages")
     return chunks
 
 
