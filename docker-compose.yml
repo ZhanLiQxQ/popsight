@@ -16,6 +16,13 @@ services:
       # Pass through from your local `.env` (docker compose auto-loads it).
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
+      SERPAPI_API_KEY: "${SERPAPI_API_KEY}"
+      POPSIGHT_GLINER_ENABLED: "${POPSIGHT_GLINER_ENABLED:-true}"
+      POPSIGHT_GLINER_MODEL_ID: "${POPSIGHT_GLINER_MODEL_ID:-urchade/gliner_small-v2.1}"
+      POPSIGHT_GLINER_THRESHOLD: "${POPSIGHT_GLINER_THRESHOLD:-0.35}"
+      POPSIGHT_GLINER_MAX_INPUT_CHARS: "${POPSIGHT_GLINER_MAX_INPUT_CHARS:-1500}"
+      POPSIGHT_GLINER_BATCH_SIZE: "${POPSIGHT_GLINER_BATCH_SIZE:-8}"
+      POPSIGHT_GLINER_CONSOLE_SAMPLES: "${POPSIGHT_GLINER_CONSOLE_SAMPLES:-3}"
     depends_on:
       postgres:
         condition: service_healthy
