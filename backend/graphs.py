@@ -15,8 +15,10 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from .config import settings
 from .llm import LLMService
 from .repository_factory import RepositoryLike
+from .vector_store import vector_store
 
 
 class DeepDiveState(TypedDict, total=False):
@@ -540,12 +542,10 @@ class GraphService:
 
         tools = self._build_native_tools()
         system_prompt = (
-            "You are the PopSight sourcing copilot.\n"
+            "You are the PopSight sourcing copilot for Prince of Peace (PoP).\n"
             "Use tools to inspect the current scan, retrieve relevant memories, and save durable insights only when the "
             "user expresses a lasting preference, decision, supplier note, or reusable buying rule.\n"
-            "Keep answers concise, specific, and commercially useful.\n\n"
-            "Retrieved context (RAG):\n"
-            f"{rag_context}\n"
+            "Keep answers concise, specific, and commercially useful."
         )
 
         try:
@@ -566,7 +566,7 @@ class GraphService:
                         selected_product_id=selected_product_id,
                     ),
                 ),
-                timeout=25,
+                timeout=300,
             )
         except ChatGoogleGenerativeAIError as e:
             response_text = (
@@ -648,19 +648,31 @@ class GraphService:
 
         scan_context = await asyncio.to_thread(self.repository.get_scan_context, scan_session_id)
         history = await asyncio.to_thread(self.repository.get_conversation_history, conversation_id, 8)
-        memories = await asyncio.to_thread(self.repository.search_memories, user_id=user_id, query=user_message, limit=5)
+        # Always include pinned memories (decisions, preferences) + keyword search for the rest
+        pinned = await asyncio.to_thread(self.repository.search_memories, user_id=user_id, query="", limit=10)
+        pinned = [m for m in pinned if m.pinned]
+        keyword = await asyncio.to_thread(self.repository.search_memories, user_id=user_id, query=user_message, limit=5)
+        seen = {m.id for m in pinned}
+        memories = pinned + [m for m in keyword if m.id not in seen]
+        doc_limit = 3 if settings.ollama_base_url else 6
+        doc_context = await asyncio.to_thread(vector_store.search, user_message, doc_limit)
 
         rag = (
             "SCAN_CONTEXT:\n"
             + safe_json(scan_context)
+            + "\n\nPOP_DOCUMENTS (catalog, specs, vendors, inventory, sales):\n"
+            + (doc_context or "(run backend/ingest.py to populate)")
             + "\n\nRECENT_HISTORY:\n"
             + safe_json(history)
             + "\n\nRELEVANT_LONG_TERM_MEMORIES:\n"
             + safe_json([m.model_dump(mode="json") for m in memories])
         )
         system_prompt = (
-            "You are the PopSight sourcing copilot.\n"
-            "Use tools when needed. Save durable memory only for lasting preferences/decisions/supplier notes.\n\n"
+            "You are the PopSight sourcing copilot for Prince of Peace (PoP), a CPG distributor with ~800 products "
+            "(health foods, herbal teas, ginseng, ginger chews, Tiger Balm). "
+            "Help buyers discover trends, evaluate products, and find suppliers. "
+            "PoP sourcing criteria: shelf life >12 months, FDA-compliant ingredients, flag high-tariff origins.\n"
+            "Use tools when needed. Save durable memory only for lasting preferences, decisions, or supplier notes.\n\n"
             "Retrieved context (RAG):\n"
             f"{rag}\n"
         )
@@ -691,9 +703,9 @@ class GraphService:
             return product.model_dump(mode="json") if product else None
 
         @tool
-        async def search_memories(user_id: str, query: str, limit: int = 5) -> list[dict]:
+        async def search_memories(query: str, limit: int = 5, user_id: str = "default-user") -> list[dict]:
             """Search stored long-term memory items for the user."""
-            items = await asyncio.to_thread(repo.search_memories, user_id=user_id, query=query, limit=limit)
+            items = await asyncio.to_thread(repo.search_memories, user_id=user_id or "default-user", query=query, limit=limit)
             return [item.model_dump(mode="json") for item in items]
 
         @tool
@@ -701,20 +713,23 @@ class GraphService:
             """Return recent conversation messages."""
             return await asyncio.to_thread(repo.get_conversation_history, conversation_id, limit)
 
+        VALID_KINDS = {"user_preference", "product_insight", "supplier_note", "decision"}
+
         @tool
         async def save_memory(
-            user_id: str,
-            kind: str,
             title: str,
             content: str,
+            kind: str = "decision",
+            user_id: str = "default-user",
             conversation_id: str | None = None,
             scan_session_id: str | None = None,
         ) -> dict:
-            """Persist a durable memory item for future conversations."""
+            """Persist a durable memory item for future conversations. kind must be one of: user_preference, product_insight, supplier_note, decision."""
+            safe_kind = kind if kind in VALID_KINDS else "decision"
             memory = await asyncio.to_thread(
                 repo.add_memory,
-                user_id=user_id,
-                kind=kind,
+                user_id=user_id or "default-user",
+                kind=safe_kind,
                 title=title,
                 content=content,
                 source_conversation_id=conversation_id,
@@ -723,7 +738,13 @@ class GraphService:
             )
             return memory.model_dump(mode="json")
 
-        return [get_scan_context, get_product, search_memories, get_conversation_history, save_memory]
+        @tool
+        async def delete_memory(memory_id: str) -> str:
+            """Delete a saved memory by its id. Use search_memories first to find the id."""
+            deleted = await asyncio.to_thread(repo.delete_memory, memory_id)
+            return "Memory deleted." if deleted else "Memory not found."
+
+        return [get_scan_context, get_product, search_memories, get_conversation_history, save_memory, delete_memory]
 
 
 def ensure_ids(items: list[dict], *, prefix: str) -> list[dict]:

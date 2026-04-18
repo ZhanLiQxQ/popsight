@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose *)",
+      "Bash(curl -s -X POST http://localhost:8000/api/chat -H \"Content-Type: application/json\" -d '{\"conversationId\": null, \"userId\": \"user-1\", \"message\": \"What ginger products could PoP extend into a new flavor? Which ones sell best?\"}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d['conversation']['messages'][-1]['content'][:800]\\)\")",
+      "Bash(curl -s -X POST http://localhost:8000/api/chat -H \"Content-Type: application/json\" -d '{\"conversationId\": null, \"userId\": \"user-1\", \"message\": \"What ginger products could PoP extend into a new flavor?\"}')",
+      "Bash(curl -s -X POST http://localhost:8000/api/chat -H \"Content-Type: application/json\" -d '{\"conversationId\": null, \"userId\": \"user-1\", \"message\": \"What ginger products does PoP carry?\"}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d['conversation']['messages'][-1]['content'][:600]\\)\")",
+      "Bash(curl -s http://localhost:11434/api/tags)",
+      "Bash(python3 -c \"import sys,json; [print\\(m['name']\\) for m in json.load\\(sys.stdin\\).get\\('models',[]\\)]\")",
+      "Bash(curl -s -X POST http://localhost:8000/api/chat -H \"Content-Type: application/json\" -d '{\"conversationId\": null, \"userId\": \"default-user\", \"message\": \"What flavor decisions have we made in the past?\"}')",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d['conversation']['messages'][-1]['content'][:500]\\)\")"
+    ]
+  }
+}

@@ -553,6 +553,11 @@ class SqliteRepository:
 
         return [self._memory_from_row(row) for row in rows]
 
+    def delete_memory(self, memory_id: str) -> bool:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM memory_items WHERE id = ?", (memory_id,))
+            return conn.total_changes > 0
+
     def get_recent_logs(self, user_id: str, limit: int = 80) -> list[AgentLogPayload]:
         with self.connect() as conn:
             rows = conn.execute(
