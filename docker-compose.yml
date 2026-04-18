@@ -16,6 +16,8 @@ services:
       # Pass through from your local `.env` (docker compose auto-loads it).
       GEMINI_API_KEY: "${GEMINI_API_KEY}"
       GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
+    volumes:
+      - ./data:/app/data
     depends_on:
       postgres:
         condition: service_healthy

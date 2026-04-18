@@ -14,4 +14,3 @@ data/*.sqlite
 !.env.example
 data/
 hackathon-instructions/
-claude.md

@@ -17,6 +17,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from .llm import LLMService
 from .repository_factory import RepositoryLike
+from .vector_store import vector_store
 
 
 class DeepDiveState(TypedDict, total=False):
@@ -649,18 +650,24 @@ class GraphService:
         scan_context = await asyncio.to_thread(self.repository.get_scan_context, scan_session_id)
         history = await asyncio.to_thread(self.repository.get_conversation_history, conversation_id, 8)
         memories = await asyncio.to_thread(self.repository.search_memories, user_id=user_id, query=user_message, limit=5)
+        doc_context = await asyncio.to_thread(vector_store.search, user_message, 6)
 
         rag = (
             "SCAN_CONTEXT:\n"
             + safe_json(scan_context)
+            + "\n\nPOP_DOCUMENTS (catalog, specs, vendors, inventory, sales):\n"
+            + (doc_context or "(run backend/ingest.py to populate)")
             + "\n\nRECENT_HISTORY:\n"
             + safe_json(history)
             + "\n\nRELEVANT_LONG_TERM_MEMORIES:\n"
             + safe_json([m.model_dump(mode="json") for m in memories])
         )
         system_prompt = (
-            "You are the PopSight sourcing copilot.\n"
-            "Use tools when needed. Save durable memory only for lasting preferences/decisions/supplier notes.\n\n"
+            "You are the PopSight sourcing copilot for Prince of Peace (PoP), a CPG distributor with ~800 products "
+            "(health foods, herbal teas, ginseng, ginger chews, Tiger Balm). "
+            "Help buyers discover trends, evaluate products, and find suppliers. "
+            "PoP sourcing criteria: shelf life >12 months, FDA-compliant ingredients, flag high-tariff origins.\n"
+            "Use tools when needed. Save durable memory only for lasting preferences, decisions, or supplier notes.\n\n"
             "Retrieved context (RAG):\n"
             f"{rag}\n"
         )
