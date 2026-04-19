@@ -10,6 +10,7 @@ from google.genai import types as google_types
 from google.genai.errors import ClientError
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
+from langchain_ollama import ChatOllama
 
 from .config import settings
 from .schemas import MacroSuggestionPayload
@@ -22,15 +23,15 @@ class LLMService:
         self.demo_mode = False
 
     def ensure_clients(self) -> None:
+        # Ollama overrides Gemini for chat — useful for local testing
         if settings.ollama_base_url:
             if self.chat_model is None:
-                from langchain_ollama import ChatOllama
-
                 self.chat_model = ChatOllama(
                     model=settings.chat_model,
-                    base_url=settings.ollama_base_url.rstrip("/"),
+                    base_url=settings.ollama_base_url,
                     temperature=0.2,
                 )
+            # Still init Gemini client for scan + embeddings if key is present
             if settings.gemini_api_key and self.client is None:
                 self.client = genai.Client(api_key=settings.gemini_api_key)
             return

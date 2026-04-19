@@ -9,15 +9,17 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    # `.env` (SERPAPI_API_KEY, GEMINI_API_KEY, POPSIGHT_GLINER_*, etc.) goes into the
+    # container via `env_file`. `environment:` below overrides any conflicting keys so
+    # service hostnames (postgres/qdrant) stay correct inside the Docker network.
+    env_file:
+      - .env
     environment:
       APP_ENV: "development"
       APP_URL: "http://localhost:8000"
       POPSIGHT_DATABASE_URL: "postgresql://popsight:popsight@postgres:5432/popsight"
       POPSIGHT_AUTO_BOOTSTRAP_MACROS: "true"
       POPSIGHT_QDRANT_URL: "http://qdrant:6333"
-      # Pass through from your local `.env` (docker compose auto-loads it).
-      GEMINI_API_KEY: "${GEMINI_API_KEY}"
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
     depends_on:
       postgres:
         condition: service_healthy

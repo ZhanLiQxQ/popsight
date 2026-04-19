@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Blocks,
   BookOpen,
   Brain,
+  ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock3,
   Database,
@@ -12,11 +14,11 @@ import {
   Pin,
   Radar,
   RefreshCw,
-  Search,
   Sparkles,
   Target,
   TrendingUp,
   Truck,
+  X,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -33,6 +35,14 @@ import {
   Trend,
 } from './types';
 import { chatWithAgent, getAgentAnalysis, getBootstrap, saveMemory } from './lib/gemini';
+import {
+  DISCOVERY_LANE_OPTIONS,
+  buildTrendyProducts,
+  postMacroColdStart,
+  type DiscoveryLaneId,
+  type MacroColdStartResponse,
+  type TrendyProduct,
+} from './lib/discoveryPipeline';
 
 type AppView = 'workspace' | 'conversations' | 'memory' | 'agents';
 type ResultTab = 'products' | 'trends' | 'supply';
@@ -61,6 +71,20 @@ function createInitialAssistantMessage(): ChatMessage {
       'I can follow up on the products from the current scan, remember the active context in this conversation, and save durable business insights into long-term memory.',
     timestamp: nowIso(),
   };
+}
+
+const TRENDY_CONTEXT_MARKER = '[Active product context';
+
+function displayMessageContent(content: string): { body: string; contextLine: string | null } {
+  if (!content.startsWith(TRENDY_CONTEXT_MARKER)) {
+    return { body: content, contextLine: null };
+  }
+  const idx = content.indexOf('User question:');
+  if (idx === -1) return { body: content, contextLine: null };
+  const body = content.slice(idx + 'User question:'.length).trim();
+  const match = content.match(/-\s*Product:\s*([^\n]+)/);
+  const productName = match ? match[1].trim() : 'selected product';
+  return { body, contextLine: `Asking about: ${productName}` };
 }
 
 function formatTime(value: string) {
@@ -94,9 +118,21 @@ function App() {
   const [selectedTrendId, setSelectedTrendId] = useState<string | null>(null);
   const [selectedManufacturerId, setSelectedManufacturerId] = useState<string | null>(null);
 
+  const [activeLaneId, setActiveLaneId] = useState<DiscoveryLaneId | null>(null);
+  const [laneResponse, setLaneResponse] = useState<MacroColdStartResponse | null>(null);
+  const [isLaneLoading, setIsLaneLoading] = useState(false);
+  const [laneError, setLaneError] = useState<string | null>(null);
+  const [selectedTrendyId, setSelectedTrendyId] = useState<string | null>(null);
+  const [detailTrendyId, setDetailTrendyId] = useState<string | null>(null);
+
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isChatbotCollapsed, setIsChatbotCollapsed] = useState(false);
+  const [isPinnedMemoryCollapsed, setIsPinnedMemoryCollapsed] = useState(false);
+
   const chatEndRef = useRef<HTMLDivElement>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const fallbackAssistantMessageRef = useRef<ChatMessage>(createInitialAssistantMessage());
+  const productConvIdsRef = useRef<Record<string, string>>({});
 
   const currentScan = scanSessions.find((session) => session.id === currentScanId) ?? null;
   const activeConversation = conversations.find((conversation) => conversation.id === activeConversationId) ?? null;
@@ -109,6 +145,16 @@ function App() {
   const selectedManufacturer = manufacturers.find((item) => item.id === selectedManufacturerId);
   const recentConversations = conversations.slice(0, 8);
   const pinnedMemories = longTermMemories.filter((item) => item.pinned);
+  const trendyProducts = useMemo(
+    () => (laneResponse && activeLaneId ? buildTrendyProducts(laneResponse, activeLaneId) : []),
+    [laneResponse, activeLaneId],
+  );
+  const selectedTrendy = trendyProducts.find((p) => p.id === selectedTrendyId) ?? null;
+  const detailTrendy = trendyProducts.find((p) => p.id === detailTrendyId) ?? null;
+  const activeLaneLabel =
+    laneResponse?.lanes.find((lane) => lane.categoryId === activeLaneId)?.categoryLabel ?? null;
+  const highCount = trendyProducts.filter((p) => p.priority === 'HIGH').length;
+  const mediumCount = trendyProducts.filter((p) => p.priority === 'MEDIUM').length;
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -119,10 +165,34 @@ function App() {
   }, [agentLogs]);
 
   useEffect(() => {
-    const initialSession = scanSessions[0];
-    if (!currentScanId && initialSession) setCurrentScanId(initialSession.id);
     if (!activeConversationId && conversations[0]) setActiveConversationId(conversations[0].id);
-  }, [scanSessions, currentScanId, conversations, activeConversationId]);
+  }, [conversations, activeConversationId]);
+
+  useEffect(() => {
+    if (!selectedTrendyId) return;
+    const trendy = trendyProducts.find((p) => p.id === selectedTrendyId);
+    if (!trendy) return;
+    const nextTopic = trendy.product_name;
+
+    const existingId = productConvIdsRef.current[nextTopic];
+    if (existingId) {
+      setActiveConversationId(existingId);
+      return;
+    }
+
+    const conversation: Conversation = {
+      id: createId('conv'),
+      title: nextTopic,
+      topic: nextTopic,
+      scanSessionId: undefined,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      messages: [createInitialAssistantMessage()],
+    };
+    productConvIdsRef.current[nextTopic] = conversation.id;
+    setConversations((previous) => [conversation, ...previous]);
+    setActiveConversationId(conversation.id);
+  }, [selectedTrendyId, trendyProducts]);
 
   useEffect(() => {
     if (!currentScan) {
@@ -151,7 +221,8 @@ function App() {
       try {
         const data = await getBootstrap();
         setMacros(data.macros);
-        setConversations(data.conversations);
+        setConversations([]);
+        setActiveConversationId(null);
         setLongTermMemories(data.memories);
         setScanSessions(data.scanSessions);
         setAgentLogs(data.agentLogs);
@@ -277,14 +348,90 @@ function App() {
     setIsLoading(false);
   };
 
+  const handleSelectLane = async (laneId: DiscoveryLaneId, laneLabel: string) => {
+    if (isLaneLoading) return;
+
+    setActiveView('workspace');
+    setActiveLaneId(laneId);
+    setIsLaneLoading(true);
+    setLaneError(null);
+    setLaneResponse(null);
+    setSelectedTrendyId(null);
+    setDetailTrendyId(null);
+    setTopic(laneLabel);
+
+    updateAgentStatus('MarketCrawler', 'Searching', `Pulling trendy items for ${laneLabel}`);
+    addAgentLog('MarketCrawler', `Fetching trendy products for lane "${laneLabel}".`, 'info');
+
+    try {
+      const response = await postMacroColdStart({ discoveryLaneIds: [laneId] });
+      setLaneResponse(response);
+
+      if (response.discoveryAborted) {
+        addAgentLog(
+          'MarketCrawler',
+          `Discovery aborted: ${response.discoveryAbortReason ?? 'no usable Google Trends signal.'}`,
+          'warning',
+        );
+      } else {
+        const merged = buildTrendyProducts(response, laneId);
+        const high = merged.filter((p) => p.priority === 'HIGH').length;
+        const medium = merged.filter((p) => p.priority === 'MEDIUM').length;
+        addAgentLog(
+          'MarketCrawler',
+          `Loaded ${merged.length} ranked product${merged.length === 1 ? '' : 's'} for "${laneLabel}" (HIGH ${high} · MEDIUM ${medium}).`,
+          'success',
+        );
+      }
+    } catch (error) {
+      const message = (error as Error)?.message || String(error);
+      setLaneError(message);
+      addAgentLog('MarketCrawler', `Lane fetch failed: ${message}`, 'error');
+    } finally {
+      updateAgentStatus('MarketCrawler', 'Idle', 'Standby');
+      setIsLaneLoading(false);
+    }
+  };
+
   const handleSendMessage = async () => {
     if (!chatInput.trim() || isChatLoading) return;
 
     const currentConversationId =
       activeConversationId || ensureConversation(topic || currentScan?.topic || 'New sourcing thread', currentScanId ?? undefined);
-    const pendingMessage = chatInput.trim();
+    const userMessage = chatInput.trim();
+
+    let pendingMessage = userMessage;
+    if (selectedTrendy) {
+      const priceStr = selectedTrendy.item_price != null ? `$${selectedTrendy.item_price.toFixed(2)}` : 'n/a';
+      const ratingStr = selectedTrendy.item_rating != null ? selectedTrendy.item_rating.toFixed(1) : 'n/a';
+      const reviewsStr =
+        selectedTrendy.item_review_count != null ? selectedTrendy.item_review_count.toLocaleString() : 'n/a';
+      const supplierStr = selectedTrendy.supplier
+        ? `${selectedTrendy.supplier}${selectedTrendy.supplier_region ? ` (${selectedTrendy.supplier_region})` : ''}`
+        : 'none assigned';
+      const reasonStr = selectedTrendy.reason ? selectedTrendy.reason.slice(0, 240) : 'n/a';
+      const contextBlock = [
+        '[Active product context — use this as grounding for the next answer]',
+        `- Product: ${selectedTrendy.product_name}`,
+        `- Category: ${selectedTrendy.category}`,
+        `- Priority: ${selectedTrendy.priority} (rank_score ${selectedTrendy.rank_score.toFixed(2)})`,
+        `- Price: ${priceStr} · Rating: ★${ratingStr} · Reviews: ${reviewsStr} · Sold: ${selectedTrendy.external_sold_quantity.toLocaleString()}`,
+        `- Supplier: ${supplierStr}`,
+        `- Reason: ${reasonStr}`,
+      ].join('\n');
+      pendingMessage = `${contextBlock}\n\nUser question: ${userMessage}`;
+    }
+
     setChatInput('');
     setIsChatLoading(true);
+
+    const optimisticUserMessage: ChatMessage = {
+      id: createId('msg'),
+      role: 'user',
+      content: pendingMessage,
+      timestamp: nowIso(),
+    };
+    appendMessageToConversation(currentConversationId, optimisticUserMessage);
 
     try {
       const response = await chatWithAgent({
@@ -296,10 +443,22 @@ function App() {
         selectedManufacturerId,
       });
 
-      setConversations((previous) => [
-        response.conversation,
-        ...previous.filter((item) => item.id !== response.conversation.id),
-      ]);
+      setConversations((previous) => {
+        const prev = previous.find((c) => c.id === response.conversation.id);
+        const trendyName = selectedTrendy?.product_name;
+        const incomingConv: Conversation = {
+          ...response.conversation,
+          topic: trendyName || prev?.topic || response.conversation.topic,
+          title: trendyName || prev?.title || response.conversation.title,
+        };
+        if (trendyName) {
+          productConvIdsRef.current[trendyName] = incomingConv.id;
+        }
+        return [
+          incomingConv,
+          ...previous.filter((item) => item.id !== incomingConv.id),
+        ];
+      });
       setLongTermMemories(response.memories);
       setAgentLogs(response.agentLogs);
       setActiveConversationId(response.conversation.id);
@@ -337,70 +496,120 @@ function App() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--bg-app)] text-[var(--ink-strong)]">
-      <aside className="flex w-72 flex-col border-r border-[var(--line-soft)] bg-[var(--panel-strong)] text-white">
-        <div className="border-b border-white/10 px-6 py-6">
-          <div className="mb-2 flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--accent)]/15 text-[var(--accent)]">
-              <Radar className="h-5 w-5" />
+      <aside
+        className={`flex flex-col border-r border-[var(--line-soft)] bg-[var(--panel-strong)] text-white transition-[width] duration-200 ${
+          isSidebarCollapsed ? 'w-14' : 'w-72'
+        }`}
+      >
+        {isSidebarCollapsed ? (
+          <>
+            <div className="flex items-center justify-center border-b border-white/10 py-4">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]">
+                <Radar className="h-4 w-4" />
+              </div>
             </div>
-            <div>
-              <p className="text-lg font-semibold tracking-tight">PopSight</p>
-              <p className="text-xs text-white/50">CPG sourcing cockpit</p>
-            </div>
-          </div>
-        </div>
-
-        <nav className="flex-1 space-y-2 px-4 py-5">
-          {navItems.map((item) => (
+            <nav className="flex-1 space-y-2 px-2 py-4">
+              {navItems.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveView(item.id)}
+                  title={item.label}
+                  className={`flex w-full items-center justify-center rounded-xl border py-2.5 transition ${
+                    activeView === item.id
+                      ? 'border-white/15 bg-white/10'
+                      : 'border-transparent bg-white/5 hover:bg-white/8'
+                  }`}
+                >
+                  <item.icon className="h-4 w-4 text-[var(--accent)]" />
+                </button>
+              ))}
+            </nav>
             <button
-              key={item.id}
-              onClick={() => setActiveView(item.id)}
-              className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
-                activeView === item.id
-                  ? 'border-white/15 bg-white/10'
-                  : 'border-transparent bg-white/5 hover:bg-white/8'
-              }`}
+              onClick={() => setIsSidebarCollapsed(false)}
+              title="Expand sidebar"
+              className="m-2 flex items-center justify-center rounded-xl border border-white/10 bg-white/5 py-2 text-white/70 transition hover:bg-white/10"
             >
-              <div className="flex items-center gap-3">
-                <item.icon className="h-4 w-4 text-[var(--accent)]" />
-                <div>
-                  <div className="text-sm font-medium">{item.label}</div>
-                  <div className="text-[11px] text-white/50">{item.helper}</div>
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="border-b border-white/10 px-6 py-6">
+              <div className="mb-2 flex items-center gap-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--accent)]/15 text-[var(--accent)]">
+                  <Radar className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-lg font-semibold tracking-tight">PopSight</p>
+                  <p className="text-xs text-white/50">CPG sourcing cockpit</p>
+                </div>
+                <button
+                  onClick={() => setIsSidebarCollapsed(true)}
+                  title="Collapse sidebar"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/70 transition hover:bg-white/10"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <nav className="flex-1 space-y-2 px-4 py-5">
+              {navItems.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveView(item.id)}
+                  className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                    activeView === item.id
+                      ? 'border-white/15 bg-white/10'
+                      : 'border-transparent bg-white/5 hover:bg-white/8'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <item.icon className="h-4 w-4 text-[var(--accent)]" />
+                    <div>
+                      <div className="text-sm font-medium">{item.label}</div>
+                      <div className="text-[11px] text-white/50">{item.helper}</div>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </nav>
+
+            <div className="space-y-4 border-t border-white/10 px-4 py-5">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-xs uppercase tracking-[0.2em] text-white/45">Current context</p>
+                  <Clock3 className="h-3.5 w-3.5 text-white/35" />
+                </div>
+                <p className="mb-1 text-sm font-medium text-white/90">
+                  {selectedTrendy?.product_name || activeLaneLabel || 'No active lane'}
+                </p>
+                <p className="text-xs text-white/50">
+                  {laneResponse
+                    ? `${trendyProducts.length} trendy products · HIGH ${highCount} · MEDIUM ${mediumCount}`
+                    : 'Pick a discovery lane to start.'}
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-xs uppercase tracking-[0.2em] text-white/45">Memory split</p>
+                  <Database className="h-3.5 w-3.5 text-white/35" />
+                </div>
+                <div className="space-y-3 text-xs">
+                  <div>
+                    <p className="text-white/80">Short-term</p>
+                    <p className="text-white/45">Current scan, selected product, recent messages</p>
+                  </div>
+                  <div>
+                    <p className="text-white/80">Long-term</p>
+                    <p className="text-white/45">Pinned preferences, reusable insights, decisions</p>
+                  </div>
                 </div>
               </div>
-            </button>
-          ))}
-        </nav>
-
-        <div className="space-y-4 border-t border-white/10 px-4 py-5">
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-xs uppercase tracking-[0.2em] text-white/45">Current context</p>
-              <Clock3 className="h-3.5 w-3.5 text-white/35" />
             </div>
-            <p className="mb-1 text-sm font-medium text-white/90">{currentScan?.topic || 'No active scan'}</p>
-            <p className="text-xs text-white/50">
-              {currentScan ? `${opportunities.length} products, ${trends.length} trends, ${manufacturers.length} suppliers` : 'Run a scan to build working memory.'}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-xs uppercase tracking-[0.2em] text-white/45">Memory split</p>
-              <Database className="h-3.5 w-3.5 text-white/35" />
-            </div>
-            <div className="space-y-3 text-xs">
-              <div>
-                <p className="text-white/80">Short-term</p>
-                <p className="text-white/45">Current scan, selected product, recent messages</p>
-              </div>
-              <div>
-                <p className="text-white/80">Long-term</p>
-                <p className="text-white/45">Pinned preferences, reusable insights, decisions</p>
-              </div>
-            </div>
-          </div>
-        </div>
+          </>
+        )}
       </aside>
 
       <main className="flex min-w-0 flex-1">
@@ -426,28 +635,11 @@ function App() {
                 </p>
               </div>
 
-              {activeView === 'workspace' && (
-                <div className="flex w-full max-w-2xl items-center gap-3">
-                  <div className="relative flex-1">
-                    <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ink-faint)]" />
-                    <input
-                      type="text"
-                      value={topic}
-                      onChange={(event) => setTopic(event.target.value)}
-                      onKeyDown={(event) => event.key === 'Enter' && runAnalysis()}
-                      placeholder="Search trends, product formats, or retail whitespace"
-                      className="h-12 w-full rounded-2xl border border-[var(--line-soft)] bg-[var(--bg-app)] pl-11 pr-4 text-sm outline-none transition focus:border-[var(--accent)]"
-                    />
-                  </div>
-                  <button
-                    onClick={() => runAnalysis()}
-                    disabled={isLoading}
-                    className="flex h-12 items-center gap-2 rounded-2xl bg-[var(--accent)] px-5 text-sm font-medium text-[var(--panel-strong)] transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isLoading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                    Scan
-                  </button>
-                </div>
+              {activeView === 'workspace' && isLaneLoading && (
+                <span className="inline-flex items-center gap-2 rounded-full border border-[var(--line-soft)] bg-white px-3 py-1.5 text-xs text-[var(--ink-soft)]">
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  Running discovery pipeline…
+                </span>
               )}
             </div>
           </header>
@@ -456,293 +648,132 @@ function App() {
             {activeView === 'workspace' && (
               <div className="space-y-8">
                 <section className="rounded-[28px] border border-[var(--line-soft)] bg-[var(--surface)] p-6 shadow-[0_18px_50px_rgba(16,24,40,0.08)]">
-                  <div className="mb-5 flex items-center justify-between">
+                  <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
                     <div>
-                      <p className="text-xs uppercase tracking-[0.24em] text-[var(--ink-faint)]">Macro cues</p>
-                      <h2 className="mt-1 text-xl font-semibold">Start from what is moving, not from a blank search box</h2>
+                      <p className="text-xs uppercase tracking-[0.24em] text-[var(--ink-faint)]">Discovery lanes</p>
+                      <h2 className="mt-1 text-xl font-semibold">Pick a category to pull trendy products</h2>
+                      <p className="mt-1 text-sm text-[var(--ink-soft)]">
+                        Six fixed retail lanes. Each click runs the full pipeline: Google Trends → MacroScout → Amazon Top 5 → Compress + NER → Rank → Supply Plan → Final list.
+                      </p>
                     </div>
-                    <div className="rounded-full bg-[var(--bg-app)] px-3 py-1 text-xs text-[var(--ink-soft)]">
-                      {isDiscovering ? 'Updating suggestions' : 'Autonomous suggestions'}
-                    </div>
+                    {laneResponse && !isLaneLoading && activeLaneLabel && (
+                      <span className="rounded-full bg-[var(--accent-muted)] px-3 py-1 text-xs text-[var(--accent-deep)]">
+                        {trendyProducts.length} product{trendyProducts.length === 1 ? '' : 's'} · HIGH {highCount} · MEDIUM {mediumCount} · {activeLaneLabel}
+                      </span>
+                    )}
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                    {isDiscovering
-                      ? Array.from({ length: 4 }).map((_, index) => (
-                          <div
-                            key={index}
-                            className="h-36 animate-pulse rounded-3xl border border-[var(--line-soft)] bg-[var(--bg-app)]"
-                          />
-                        ))
-                      : macros.slice(0, 4).map((macro) => (
-                          <button
-                            key={macro.category}
-                            onClick={() => runAnalysis(macro.category)}
-                            className="rounded-3xl border border-[var(--line-soft)] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-[var(--accent)]"
-                          >
-                            <div className="mb-3 flex items-center justify-between">
-                              <span className="rounded-full bg-[var(--accent-muted)] px-2.5 py-1 text-[11px] font-medium text-[var(--accent-deep)]">
-                                {macro.region}
-                              </span>
-                              <span className="text-[11px] text-[var(--ink-faint)]">{macro.growthIndicator}</span>
-                            </div>
-                            <p className="mb-2 text-base font-semibold">{macro.category}</p>
-                            <p className="text-sm leading-6 text-[var(--ink-soft)]">{macro.reason}</p>
-                          </button>
-                        ))}
+                  <div className="flex flex-wrap gap-2">
+                    {DISCOVERY_LANE_OPTIONS.map((lane) => {
+                      const isActive = activeLaneId === lane.id;
+                      const showSpinner = isActive && isLaneLoading;
+                      return (
+                        <button
+                          key={lane.id}
+                          type="button"
+                          onClick={() => handleSelectLane(lane.id, lane.label)}
+                          disabled={isLaneLoading}
+                          className={`rounded-full border px-4 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-70 ${
+                            isActive
+                              ? 'border-[var(--accent)] bg-[var(--accent-muted)] text-[var(--accent-deep)]'
+                              : 'border-[var(--line-soft)] bg-white hover:border-[var(--accent)]/60'
+                          }`}
+                        >
+                          <span className="inline-flex items-center gap-2">
+                            {showSpinner && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+                            {lane.label}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
-                </section>
 
-                <section className="grid gap-5 xl:grid-cols-[1.4fr_0.9fr]">
-                  <div className="space-y-5">
-                    <div className="grid gap-4 md:grid-cols-3">
-                      <MetricCard
-                        label="Products"
-                        value={opportunities.length}
-                        helper={currentScan ? 'Follow-up ready' : 'Waiting for scan'}
-                        icon={<Target className="h-4 w-4" />}
-                      />
-                      <MetricCard
-                        label="Trends"
-                        value={trends.length}
-                        helper={currentScan ? 'Attached to current topic' : 'Waiting for scan'}
-                        icon={<TrendingUp className="h-4 w-4" />}
-                      />
-                      <MetricCard
-                        label="Suppliers"
-                        value={manufacturers.length}
-                        helper={currentScan ? 'Visible on demand' : 'Waiting for scan'}
-                        icon={<Truck className="h-4 w-4" />}
-                      />
+                  {laneError && (
+                    <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {laneError}
                     </div>
+                  )}
 
-                    <div className="rounded-[28px] border border-[var(--line-soft)] bg-[var(--surface)] p-6">
-                      <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.24em] text-[var(--ink-faint)]">Results</p>
-                          <h3 className="mt-1 text-lg font-semibold">{currentScan?.topic || 'No active scan yet'}</h3>
-                        </div>
-                        <div className="flex gap-2 rounded-full bg-[var(--bg-app)] p-1">
-                          {[
-                            { id: 'products', label: 'Products' },
-                            { id: 'trends', label: 'Trends' },
-                            { id: 'supply', label: 'Supply' },
-                          ].map((tab) => (
-                            <button
-                              key={tab.id}
-                              onClick={() => setActiveTab(tab.id as ResultTab)}
-                              className={`rounded-full px-4 py-2 text-sm transition ${
-                                activeTab === tab.id
-                                  ? 'bg-white text-[var(--ink-strong)] shadow-sm'
-                                  : 'text-[var(--ink-soft)]'
-                              }`}
-                            >
-                              {tab.label}
-                            </button>
+                  {(laneResponse || isLaneLoading) && (
+                    <div className="mt-6">
+                      {isLaneLoading && !laneResponse ? (
+                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                          {Array.from({ length: 6 }).map((_, index) => (
+                            <div
+                              key={index}
+                              className="h-44 animate-pulse rounded-3xl border border-[var(--line-soft)] bg-[var(--bg-app)]"
+                            />
                           ))}
                         </div>
-                      </div>
-
-                      {currentScan && (
-                        <div className="mb-5 rounded-2xl border border-[var(--line-soft)] bg-[var(--bg-app)] p-4 text-sm text-[var(--ink-soft)]">
-                          {currentScan.summary}
-                        </div>
-                      )}
-
-                      <AnimatePresence mode="wait">
-                        {activeTab === 'products' && (
-                          <motion.div
-                            key="products"
-                            initial={{ opacity: 0, y: 6 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -6 }}
-                            className="grid gap-4"
-                          >
-                            {opportunities.length === 0 && <EmptyState text="Run a scan to surface product opportunities." />}
-                            {opportunities.map((product) => (
-                              <button
+                      ) : laneResponse ? (
+                        trendyProducts.length === 0 ? (
+                          <EmptyState
+                            text={
+                              laneResponse.discoveryAborted
+                                ? `Discovery aborted: ${laneResponse.discoveryAbortReason ?? 'no usable Google Trends signal.'}`
+                                : 'No ranked products surfaced for this lane. Try another category or check API quotas.'
+                            }
+                          />
+                        ) : (
+                          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                            {trendyProducts.map((product) => (
+                              <TrendyProductCard
                                 key={product.id}
-                                onClick={() => {
-                                  setSelectedProductId(product.id);
-                                  setSelectedTrendId(null);
-                                  setSelectedManufacturerId(null);
+                                product={product}
+                                isActive={selectedTrendyId === product.id}
+                                onSelect={() =>
+                                  setSelectedTrendyId((prev) =>
+                                    prev === product.id ? null : product.id,
+                                  )
+                                }
+                                onOpenDetails={() => {
+                                  setSelectedTrendyId(product.id);
+                                  setDetailTrendyId(product.id);
                                 }}
-                                className={`rounded-3xl border p-5 text-left transition ${
-                                  selectedProductId === product.id
-                                    ? 'border-[var(--accent)] bg-[var(--accent-muted)]/55'
-                                    : 'border-[var(--line-soft)] bg-white hover:border-[var(--accent)]/50'
-                                }`}
-                              >
-                                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                                  <div>
-                                    <p className="text-lg font-semibold">{product.name}</p>
-                                    <p className="text-sm text-[var(--ink-soft)]">
-                                      {product.brand} · {product.origin}
-                                    </p>
-                                  </div>
-                                  <div className="rounded-2xl bg-[var(--panel-strong)] px-3 py-2 text-right text-white">
-                                    <div className="text-[11px] uppercase tracking-[0.16em] text-white/55">traction</div>
-                                    <div className="text-lg font-semibold">{product.tractionScore}</div>
-                                  </div>
-                                </div>
-                                <div className="mb-3 flex flex-wrap gap-2 text-xs">
-                                  <span className="rounded-full bg-[var(--bg-app)] px-3 py-1">{product.category}</span>
-                                  <span className="rounded-full bg-[var(--bg-app)] px-3 py-1">{product.velocity}</span>
-                                  <span className="rounded-full bg-[var(--bg-app)] px-3 py-1">{product.distributionStatus}</span>
-                                  <span className="rounded-full bg-[var(--bg-app)] px-3 py-1">{product.pricePoint}</span>
-                                </div>
-                                <p className="text-sm leading-6 text-[var(--ink-soft)]">{product.description}</p>
-                              </button>
+                              />
                             ))}
-                          </motion.div>
-                        )}
-
-                        {activeTab === 'trends' && (
-                          <motion.div
-                            key="trends"
-                            initial={{ opacity: 0, y: 6 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -6 }}
-                            className="grid gap-4 md:grid-cols-2"
-                          >
-                            {trends.length === 0 && <EmptyState text="Trend cards will appear after a scan." />}
-                            {trends.map((trend) => (
-                              <button
-                                key={trend.id}
-                                onClick={() => {
-                                  setSelectedTrendId(trend.id);
-                                  setSelectedProductId(null);
-                                  setSelectedManufacturerId(null);
-                                }}
-                                className={`rounded-3xl border p-5 text-left transition ${
-                                  selectedTrendId === trend.id
-                                    ? 'border-[var(--accent)] bg-[var(--accent-muted)]/55'
-                                    : 'border-[var(--line-soft)] bg-white hover:border-[var(--accent)]/50'
-                                }`}
-                              >
-                                <div className="mb-3 flex items-center justify-between gap-3">
-                                  <span className="rounded-full bg-[var(--bg-app)] px-3 py-1 text-xs">{trend.category}</span>
-                                  <span className="text-xs text-[var(--ink-soft)]">{trend.sentiment}</span>
-                                </div>
-                                <p className="mb-2 text-lg font-semibold">{trend.topic}</p>
-                                <p className="mb-3 text-sm text-[var(--ink-soft)]">{trend.growth}</p>
-                                <div className="flex flex-wrap gap-2">
-                                  {trend.topKeywords.map((keyword) => (
-                                    <span
-                                      key={keyword}
-                                      className="rounded-full bg-[var(--accent-muted)] px-2.5 py-1 text-xs text-[var(--accent-deep)]"
-                                    >
-                                      #{keyword}
-                                    </span>
-                                  ))}
-                                </div>
-                              </button>
-                            ))}
-                          </motion.div>
-                        )}
-
-                        {activeTab === 'supply' && (
-                          <motion.div
-                            key="supply"
-                            initial={{ opacity: 0, y: 6 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -6 }}
-                            className="grid gap-4 md:grid-cols-2"
-                          >
-                            {manufacturers.length === 0 && <EmptyState text="Supplier candidates will appear after a scan." />}
-                            {manufacturers.map((manufacturer) => (
-                              <button
-                                key={manufacturer.id}
-                                onClick={() => {
-                                  setSelectedManufacturerId(manufacturer.id);
-                                  setSelectedProductId(null);
-                                  setSelectedTrendId(null);
-                                }}
-                                className={`rounded-3xl border p-5 text-left transition ${
-                                  selectedManufacturerId === manufacturer.id
-                                    ? 'border-[var(--accent)] bg-[var(--accent-muted)]/55'
-                                    : 'border-[var(--line-soft)] bg-white hover:border-[var(--accent)]/50'
-                                }`}
-                              >
-                                <div className="mb-2 flex items-center justify-between gap-3">
-                                  <p className="text-lg font-semibold">{manufacturer.name}</p>
-                                  <span className="rounded-full bg-[var(--bg-app)] px-3 py-1 text-xs">
-                                    {manufacturer.capacity}
-                                  </span>
-                                </div>
-                                <p className="mb-3 text-sm text-[var(--ink-soft)]">{manufacturer.location}</p>
-                                <div className="flex flex-wrap gap-2">
-                                  {manufacturer.specialization.map((item) => (
-                                    <span key={item} className="rounded-full bg-[var(--bg-app)] px-3 py-1 text-xs">
-                                      {item}
-                                    </span>
-                                  ))}
-                                </div>
-                              </button>
-                            ))}
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
+                          </div>
+                        )
+                      ) : null}
                     </div>
-                  </div>
+                  )}
 
-                  <div className="space-y-5">
-                    <div className="rounded-[28px] border border-[var(--line-soft)] bg-[var(--surface)] p-6">
-                      <p className="text-xs uppercase tracking-[0.24em] text-[var(--ink-faint)]">Selected context</p>
-                      <div className="mt-4 space-y-4">
-                        {selectedProduct && (
-                          <FocusCard
-                            title={selectedProduct.name}
-                            subtitle={`${selectedProduct.brand} · ${selectedProduct.origin}`}
-                            body={selectedProduct.description}
-                          />
-                        )}
-                        {selectedTrend && (
-                          <FocusCard title={selectedTrend.topic} subtitle={selectedTrend.category} body={selectedTrend.growth} />
-                        )}
-                        {selectedManufacturer && (
-                          <FocusCard
-                            title={selectedManufacturer.name}
-                            subtitle={selectedManufacturer.location}
-                            body={selectedManufacturer.specialization.join(', ')}
-                          />
-                        )}
-                        {!selectedProduct && !selectedTrend && !selectedManufacturer && (
-                          <EmptyState text="Pick a product, trend, or supplier to make follow-up chat more precise." />
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="rounded-[28px] border border-[var(--line-soft)] bg-[var(--surface)] p-6">
-                      <div className="mb-4 flex items-center justify-between">
-                        <p className="text-xs uppercase tracking-[0.24em] text-[var(--ink-faint)]">Recent threads</p>
-                        <BookOpen className="h-4 w-4 text-[var(--ink-faint)]" />
-                      </div>
-                      <div className="space-y-3">
-                        {recentConversations.length === 0 && <EmptyState text="Conversation history will appear here." compact />}
-                        {recentConversations.map((conversation) => (
-                          <button
-                            key={conversation.id}
-                            onClick={() => {
-                              setActiveConversationId(conversation.id);
-                              setCurrentScanId(conversation.scanSessionId ?? null);
-                              setActiveView('conversations');
-                            }}
-                            className="w-full rounded-2xl border border-[var(--line-soft)] bg-white px-4 py-3 text-left transition hover:border-[var(--accent)]/50"
-                          >
-                            <div className="flex items-center justify-between gap-4">
-                              <div>
-                                <p className="text-sm font-medium">{conversation.title}</p>
-                                <p className="text-xs text-[var(--ink-soft)]">{conversation.messages.length} messages</p>
-                              </div>
-                              <span className="text-xs text-[var(--ink-faint)]">{formatTime(conversation.updatedAt)}</span>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
+                  {!laneResponse && !isLaneLoading && !laneError && (
+                    <p className="mt-6 text-sm text-[var(--ink-soft)]">
+                      Select a lane above to run the full discovery pipeline and get a ranked, supply-planned product list.
+                    </p>
+                  )}
                 </section>
+
+                {recentConversations.length > 0 && (
+                  <section className="rounded-[28px] border border-[var(--line-soft)] bg-[var(--surface)] p-6">
+                    <div className="mb-4 flex items-center justify-between">
+                      <p className="text-xs uppercase tracking-[0.24em] text-[var(--ink-faint)]">Recent threads</p>
+                      <BookOpen className="h-4 w-4 text-[var(--ink-faint)]" />
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      {recentConversations.map((conversation) => (
+                        <button
+                          key={conversation.id}
+                          onClick={() => {
+                            setActiveConversationId(conversation.id);
+                            setCurrentScanId(conversation.scanSessionId ?? null);
+                            setActiveView('conversations');
+                          }}
+                          className="w-full rounded-2xl border border-[var(--line-soft)] bg-white px-4 py-3 text-left transition hover:border-[var(--accent)]/50"
+                        >
+                          <div className="flex items-center justify-between gap-4">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium">{conversation.title}</p>
+                              <p className="text-xs text-[var(--ink-soft)]">{conversation.messages.length} messages</p>
+                            </div>
+                            <span className="shrink-0 text-xs text-[var(--ink-faint)]">{formatTime(conversation.updatedAt)}</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                )}
               </div>
             )}
 
@@ -782,25 +813,36 @@ function App() {
                 <div className="rounded-[28px] border border-[var(--line-soft)] bg-[var(--surface)] p-6">
                   <p className="text-xs uppercase tracking-[0.24em] text-[var(--ink-faint)]">Conversation detail</p>
                   <div className="mt-4 space-y-4">
-                    {chatMessages.map((message) => (
-                      <div
-                        key={message.id}
-                        className={`rounded-3xl px-4 py-3 ${
-                          message.role === 'user'
-                            ? 'ml-auto max-w-[85%] bg-[var(--panel-strong)] text-white'
-                            : 'max-w-[90%] border border-[var(--line-soft)] bg-white'
-                        }`}
-                      >
-                        <p className="text-sm leading-6">{message.content}</p>
-                        <p
-                          className={`mt-2 text-[11px] ${
-                            message.role === 'user' ? 'text-white/55' : 'text-[var(--ink-faint)]'
+                    {chatMessages.map((message) => {
+                      const { body, contextLine } =
+                        message.role === 'user'
+                          ? displayMessageContent(message.content)
+                          : { body: message.content, contextLine: null };
+                      return (
+                        <div
+                          key={message.id}
+                          className={`rounded-3xl px-4 py-3 ${
+                            message.role === 'user'
+                              ? 'ml-auto max-w-[85%] bg-[var(--panel-strong)] text-white'
+                              : 'max-w-[90%] border border-[var(--line-soft)] bg-white'
                           }`}
                         >
-                          {formatTime(message.timestamp)}
-                        </p>
-                      </div>
-                    ))}
+                          {contextLine && (
+                            <p className="mb-1 text-[10px] uppercase tracking-[0.18em] text-white/60">
+                              {contextLine}
+                            </p>
+                          )}
+                          <p className="whitespace-pre-wrap text-sm leading-6">{body}</p>
+                          <p
+                            className={`mt-2 text-[11px] ${
+                              message.role === 'user' ? 'text-white/55' : 'text-[var(--ink-faint)]'
+                            }`}
+                          >
+                            {formatTime(message.timestamp)}
+                          </p>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -920,49 +962,116 @@ function App() {
           </div>
         </section>
 
-        <aside className="flex w-[420px] min-w-[380px] flex-col border-l border-[var(--line-soft)] bg-white">
+        {isChatbotCollapsed ? (
+          <aside className="flex w-12 flex-col items-center border-l border-[var(--line-soft)] bg-white py-3">
+            <button
+              onClick={() => setIsChatbotCollapsed(false)}
+              title="Expand chatbot"
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--line-soft)] bg-white text-[var(--ink-soft)] transition hover:border-[var(--accent)]/60"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <div className="mt-3 flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--accent-muted)] text-[var(--accent-deep)]">
+              <MessageSquare className="h-4 w-4" />
+            </div>
+          </aside>
+        ) : (
+          <aside className="flex w-[420px] min-w-[380px] flex-col border-l border-[var(--line-soft)] bg-white">
           <div className="border-b border-[var(--line-soft)] px-5 py-5">
-            <div className="flex items-start justify-between gap-4">
-              <div>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
                 <p className="text-xs uppercase tracking-[0.24em] text-[var(--ink-faint)]">Chatbot</p>
-                <h2 className="mt-1 text-lg font-semibold">Follow up on the current scan</h2>
+                <h2 className="mt-1 truncate text-lg font-semibold" title={
+                  selectedTrendy?.product_name ||
+                  activeLaneLabel ||
+                  currentScan?.topic ||
+                  'Follow up on the current scan'
+                }>
+                  {selectedTrendy
+                    ? `Follow up on ${selectedTrendy.product_name}`
+                    : activeLaneLabel
+                      ? `Follow up on ${activeLaneLabel}`
+                      : 'Follow up on the current scan'}
+                </h2>
               </div>
               <span className="rounded-full bg-[var(--accent-muted)] px-3 py-1 text-xs text-[var(--accent-deep)]">
                 Context aware
               </span>
+              <button
+                onClick={() => setIsChatbotCollapsed(true)}
+                title="Collapse chatbot"
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--line-soft)] bg-white text-[var(--ink-soft)] transition hover:border-[var(--accent)]/60"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2">
-              <ContextChip label="Topic" value={currentScan?.topic || 'None'} />
-              <ContextChip label="Product" value={selectedProduct?.name || 'None'} />
+              <ContextChip
+                label="Lane"
+                value={activeLaneLabel || currentScan?.topic || 'None'}
+              />
+              <ContextChip
+                label="Product"
+                value={selectedTrendy?.product_name || selectedProduct?.name || 'None'}
+              />
               <ContextChip label="Memories" value={String(longTermMemories.length)} />
             </div>
 
             {pinnedMemories.length > 0 && (
               <div className="mt-4 rounded-2xl border border-[var(--line-soft)] bg-[var(--bg-app)] p-3">
-                <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-[var(--ink-faint)]">Pinned memory</p>
-                <p className="text-sm text-[var(--ink-soft)]">{pinnedMemories[0]?.content}</p>
+                <button
+                  type="button"
+                  onClick={() => setIsPinnedMemoryCollapsed((prev) => !prev)}
+                  className="flex w-full items-center justify-between gap-2 text-left"
+                  title={isPinnedMemoryCollapsed ? 'Expand pinned memory' : 'Collapse pinned memory'}
+                >
+                  <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-[0.18em] text-[var(--ink-faint)]">
+                    <Pin className="h-3 w-3" />
+                    Pinned memory
+                    <span className="text-[var(--ink-faint)]">· {pinnedMemories.length}</span>
+                  </span>
+                  <ChevronDown
+                    className={`h-3.5 w-3.5 text-[var(--ink-faint)] transition-transform ${
+                      isPinnedMemoryCollapsed ? '-rotate-90' : ''
+                    }`}
+                  />
+                </button>
+                {!isPinnedMemoryCollapsed && (
+                  <p className="mt-2 text-sm text-[var(--ink-soft)]">{pinnedMemories[0]?.content}</p>
+                )}
               </div>
             )}
           </div>
 
           <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
-            {chatMessages.map((message) => (
-              <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div
-                  className={`max-w-[88%] rounded-[24px] px-4 py-3 ${
-                    message.role === 'user'
-                      ? 'bg-[var(--panel-strong)] text-white'
-                      : 'border border-[var(--line-soft)] bg-[var(--surface)]'
-                  }`}
-                >
-                  <p className="text-sm leading-6">{message.content}</p>
-                  <p className={`mt-2 text-[11px] ${message.role === 'user' ? 'text-white/50' : 'text-[var(--ink-faint)]'}`}>
-                    {formatTime(message.timestamp)}
-                  </p>
+            {chatMessages.map((message) => {
+              const { body, contextLine } =
+                message.role === 'user'
+                  ? displayMessageContent(message.content)
+                  : { body: message.content, contextLine: null };
+              return (
+                <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div
+                    className={`max-w-[88%] rounded-[24px] px-4 py-3 ${
+                      message.role === 'user'
+                        ? 'bg-[var(--panel-strong)] text-white'
+                        : 'border border-[var(--line-soft)] bg-[var(--surface)]'
+                    }`}
+                  >
+                    {contextLine && (
+                      <p className="mb-1 text-[10px] uppercase tracking-[0.18em] text-white/60">
+                        {contextLine}
+                      </p>
+                    )}
+                    <p className="whitespace-pre-wrap text-sm leading-6">{body}</p>
+                    <p className={`mt-2 text-[11px] ${message.role === 'user' ? 'text-white/50' : 'text-[var(--ink-faint)]'}`}>
+                      {formatTime(message.timestamp)}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
             {isChatLoading && (
               <div className="max-w-[120px] rounded-[24px] border border-[var(--line-soft)] bg-[var(--surface)] px-4 py-3">
@@ -1038,8 +1147,18 @@ function App() {
               Chat history is stored as conversation records. Only stable business facts should be promoted into long-term memory.
             </p>
           </div>
-        </aside>
+          </aside>
+        )}
       </main>
+
+      <AnimatePresence>
+        {detailTrendy && (
+          <TrendyDetailModal
+            product={detailTrendy}
+            onClose={() => setDetailTrendyId(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1072,9 +1191,12 @@ function MetricCard({
 
 function ContextChip({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-full bg-[var(--bg-app)] px-3 py-1.5 text-xs text-[var(--ink-soft)]">
-      <span className="mr-1 text-[var(--ink-faint)]">{label}:</span>
-      <span className="font-medium text-[var(--ink-strong)]">{value}</span>
+    <div
+      title={value}
+      className="flex max-w-full items-center gap-1 rounded-full bg-[var(--bg-app)] px-3 py-1.5 text-xs text-[var(--ink-soft)]"
+    >
+      <span className="shrink-0 text-[var(--ink-faint)]">{label}:</span>
+      <span className="truncate font-medium text-[var(--ink-strong)]">{value}</span>
     </div>
   );
 }
@@ -1085,6 +1207,265 @@ function FocusCard({ title, subtitle, body }: { title: string; subtitle: string;
       <p className="text-base font-semibold">{title}</p>
       <p className="mt-1 text-sm text-[var(--ink-soft)]">{subtitle}</p>
       <p className="mt-3 text-sm leading-6 text-[var(--ink-soft)]">{body}</p>
+    </div>
+  );
+}
+
+const PRIORITY_BADGE: Record<TrendyProduct['priority'], string> = {
+  HIGH: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  MEDIUM: 'bg-amber-100 text-amber-800 border-amber-200',
+  LOW: 'bg-slate-100 text-slate-600 border-slate-200',
+};
+
+function TrendyProductCard({
+  product,
+  isActive,
+  onSelect,
+  onOpenDetails,
+}: {
+  product: TrendyProduct;
+  isActive: boolean;
+  onSelect: () => void;
+  onOpenDetails: () => void;
+}) {
+  const price = product.item_price != null ? `$${product.item_price.toFixed(2)}` : '—';
+  const rating = product.item_rating != null ? product.item_rating.toFixed(1) : '—';
+  const reviews =
+    product.item_review_count != null ? product.item_review_count.toLocaleString() : '—';
+  const sold = product.external_sold_quantity.toLocaleString();
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      className={`group flex h-full cursor-pointer flex-col rounded-3xl border bg-white p-5 text-left transition hover:shadow-[0_12px_30px_rgba(16,24,40,0.08)] ${
+        isActive
+          ? 'border-[var(--accent)] ring-2 ring-[var(--accent)]/30'
+          : 'border-[var(--line-soft)] hover:border-[var(--accent)]/60'
+      }`}
+    >
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <p className="text-base font-semibold leading-6">{product.product_name}</p>
+        <span
+          className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${PRIORITY_BADGE[product.priority]}`}
+        >
+          {product.priority}
+        </span>
+      </div>
+      <div className="mb-3 flex flex-wrap gap-2 text-xs">
+        <span className="rounded-full bg-[var(--bg-app)] px-3 py-1">{price}</span>
+        <span className="rounded-full bg-[var(--bg-app)] px-3 py-1">★ {rating}</span>
+        <span className="rounded-full bg-[var(--bg-app)] px-3 py-1">{reviews} reviews</span>
+        <span className="rounded-full bg-[var(--bg-app)] px-3 py-1">{sold} sold</span>
+        {product.is_actionable && product.supplier && (
+          <span className="rounded-full bg-[var(--accent-muted)] px-3 py-1 text-[var(--accent-deep)]">
+            Supplier ready
+          </span>
+        )}
+      </div>
+      {product.reason && (
+        <p className="mb-3 line-clamp-3 text-sm leading-6 text-[var(--ink-soft)]">
+          {product.reason}
+        </p>
+      )}
+      <div className="mt-auto flex items-center justify-between gap-3 pt-3 text-xs text-[var(--ink-faint)]">
+        <span>Rank score {product.rank_score.toFixed(2)}</span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenDetails();
+          }}
+          className="rounded-full border border-[var(--line-soft)] bg-white px-3 py-1 text-xs font-medium text-[var(--ink)] transition hover:border-[var(--accent)] hover:text-[var(--accent-deep)]"
+        >
+          Details →
+        </button>
+      </div>
+      {isActive && (
+        <span className="mt-3 inline-flex w-fit items-center gap-1 rounded-full bg-[var(--accent-muted)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--accent-deep)]">
+          Active context
+        </span>
+      )}
+    </div>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-[11px] uppercase tracking-[0.18em] text-[var(--ink-faint)]">{label}</span>
+      <span className="text-sm text-[var(--ink)]">{value}</span>
+    </div>
+  );
+}
+
+function TrendyDetailModal({
+  product,
+  onClose,
+}: {
+  product: TrendyProduct;
+  onClose: () => void;
+}) {
+  const price = product.item_price != null ? `$${product.item_price.toFixed(2)}` : '—';
+  const estCost =
+    product.estimated_cost != null ? `$${product.estimated_cost.toFixed(2)}` : '—';
+  const rating = product.item_rating != null ? product.item_rating.toFixed(1) : '—';
+  const reviews =
+    product.item_review_count != null ? product.item_review_count.toLocaleString() : '—';
+  const sold = product.external_sold_quantity.toLocaleString();
+  const velocity =
+    product.internal_sales_velocity != null ? product.internal_sales_velocity.toFixed(2) : '—';
+  const inventory =
+    product.inventory_health != null ? product.inventory_health.toFixed(2) : '—';
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-8 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 16, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 16, scale: 0.98 }}
+        transition={{ duration: 0.2 }}
+        onClick={(e) => e.stopPropagation()}
+        className="relative flex max-h-[86vh] w-full max-w-3xl flex-col overflow-hidden rounded-[28px] border border-[var(--line-soft)] bg-[var(--surface)] shadow-[0_30px_90px_rgba(16,24,40,0.3)]"
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 z-10 rounded-full border border-[var(--line-soft)] bg-white p-1.5 text-[var(--ink-soft)] transition hover:text-[var(--ink)]"
+          aria-label="Close details"
+        >
+          <X className="h-4 w-4" />
+        </button>
+
+        <div className="border-b border-[var(--line-soft)] bg-[var(--bg-app)] px-7 py-6">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${PRIORITY_BADGE[product.priority]}`}
+            >
+              {product.priority}
+            </span>
+            <span className="text-xs text-[var(--ink-faint)]">{product.category}</span>
+            <span className="text-xs text-[var(--ink-faint)]">
+              · Rank score {product.rank_score.toFixed(2)}
+            </span>
+          </div>
+          <h2 className="mt-2 text-lg font-semibold leading-7">{product.product_name}</h2>
+          {product.reason && (
+            <p className="mt-2 text-sm leading-6 text-[var(--ink-soft)]">{product.reason}</p>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-7 py-6">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <DetailRow label="Price" value={price} />
+            <DetailRow label="Rating" value={`★ ${rating}`} />
+            <DetailRow label="Reviews" value={reviews} />
+            <DetailRow label="Sold (external)" value={sold} />
+            <DetailRow
+              label="Est. landed cost"
+              value={product.is_actionable ? estCost : '—'}
+            />
+            <DetailRow
+              label="Supplier"
+              value={
+                product.supplier
+                  ? `${product.supplier}${product.supplier_region ? ` · ${product.supplier_region}` : ''}`
+                  : product.needs_vendor_development
+                    ? 'Needs vendor development'
+                    : '—'
+              }
+            />
+            <DetailRow
+              label="Internal match"
+              value={product.internal_match ? 'Yes' : 'No'}
+            />
+            <DetailRow label="Sales velocity" value={velocity} />
+            <DetailRow label="Inventory health" value={inventory} />
+          </div>
+
+          {product.item_review_summarized && (
+            <div className="mt-6">
+              <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--ink-faint)]">
+                Review summary
+              </p>
+              <p className="mt-1 text-sm leading-6 text-[var(--ink)]">
+                {product.item_review_summarized}
+              </p>
+            </div>
+          )}
+
+          {product.item_review_evidence.length > 0 && (
+            <div className="mt-5">
+              <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--ink-faint)]">
+                Review evidence
+              </p>
+              <ul className="mt-2 space-y-1.5 text-sm leading-6 text-[var(--ink-soft)]">
+                {product.item_review_evidence.slice(0, 6).map((line, index) => (
+                  <li key={index} className="flex gap-2">
+                    <span className="text-[var(--accent-deep)]">•</span>
+                    <span>{line}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {product.item_detail && (
+            <div className="mt-5">
+              <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--ink-faint)]">
+                Amazon listing detail
+              </p>
+              <p className="mt-1 text-sm leading-6 text-[var(--ink-soft)]">{product.item_detail}</p>
+            </div>
+          )}
+
+          {product.gliner_entities.length > 0 && (
+            <div className="mt-5">
+              <p className="text-[11px] uppercase tracking-[0.18em] text-[var(--ink-faint)]">
+                Extracted entities
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+                {product.gliner_entities.map((entity, index) => (
+                  <span
+                    key={`${entity.text}-${index}`}
+                    className="rounded-full bg-[var(--accent-muted)] px-2 py-0.5 text-[var(--accent-deep)]"
+                  >
+                    {entity.label}: {entity.text}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-3 border-t border-[var(--line-soft)] bg-[var(--bg-app)] px-7 py-4 text-xs text-[var(--ink-soft)]">
+          <span>
+            {product.asin ? `ASIN ${product.asin}` : 'No ASIN'}
+          </span>
+          {product.source_url ? (
+            <a
+              href={product.source_url}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-full bg-[var(--accent)] px-4 py-1.5 text-xs font-semibold text-white transition hover:opacity-90"
+            >
+              Open on Amazon ↗
+            </a>
+          ) : (
+            <span>No source link</span>
+          )}
+        </div>
+      </motion.div>
     </div>
   );
 }
