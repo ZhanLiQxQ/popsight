@@ -83,6 +83,7 @@ export async function saveMemory(input: {
   kind: LongTermMemoryItem['kind'];
   title: string;
   content: string;
+  pinned?: boolean;
 }) {
   return request<{
     memory: LongTermMemoryItem;
@@ -97,6 +98,16 @@ export async function saveMemory(input: {
       kind: input.kind,
       title: input.title,
       content: input.content,
+      pinned: input.pinned,
     }),
+  });
+}
+
+export async function deleteMemory(memoryId: string, userId = 'default-user') {
+  return request<{
+    deleted: boolean;
+    memories: LongTermMemoryItem[];
+  }>(`/api/memory/${encodeURIComponent(memoryId)}?userId=${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
   });
 }

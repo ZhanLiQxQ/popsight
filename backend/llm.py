@@ -10,7 +10,6 @@ from google.genai import types as google_types
 from google.genai.errors import ClientError
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
-from langchain_ollama import ChatOllama
 
 from .config import settings
 from .schemas import MacroSuggestionPayload
@@ -23,15 +22,15 @@ class LLMService:
         self.demo_mode = False
 
     def ensure_clients(self) -> None:
-        # Ollama overrides Gemini for chat — useful for local testing
         if settings.ollama_base_url:
             if self.chat_model is None:
+                from langchain_ollama import ChatOllama
+
                 self.chat_model = ChatOllama(
                     model=settings.chat_model,
-                    base_url=settings.ollama_base_url,
+                    base_url=settings.ollama_base_url.rstrip("/"),
                     temperature=0.2,
                 )
-            # Still init Gemini client for scan + embeddings if key is present
             if settings.gemini_api_key and self.client is None:
                 self.client = genai.Client(api_key=settings.gemini_api_key)
             return
@@ -149,6 +148,102 @@ class LLMService:
             except Exception:
                 continue
         return validated[:5]
+
+    async def macro_scout_amazon_search_terms_for_lane(
+        self,
+        trends_signals: list[dict[str, Any]],
+        *,
+        category_id: str,
+        category_label: str,
+        max_terms: int = 4,
+    ) -> list[dict[str, str]]:
+        """
+        Node 1 of the discovery graph: turn one lane's Google Trends rising queries into
+        up to ``max_terms`` Amazon search strings.
+
+        Returns a list of ``{"category": category_label, "search_term": str}`` rows.
+        Falls back to the raw trend queries (or the category label) if the LLM is absent
+        or returns unusable JSON, so the pipeline never hard-fails here.
+        """
+        self.ensure_clients()
+
+        rising_queries: list[str] = []
+        seen: set[str] = set()
+        for row in trends_signals:
+            if not isinstance(row, dict):
+                continue
+            q = str(row.get("query") or "").strip()
+            if not q:
+                continue
+            key = q.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            rising_queries.append(q)
+
+        def _fallback_terms() -> list[dict[str, str]]:
+            seeds = rising_queries or [category_label]
+            out: list[dict[str, str]] = []
+            emitted: set[str] = set()
+            for q in seeds:
+                s = q.strip()
+                if not s:
+                    continue
+                key = s.lower()
+                if key in emitted:
+                    continue
+                emitted.add(key)
+                out.append({"category": category_label, "search_term": s})
+                if len(out) >= max(1, max_terms):
+                    break
+            return out
+
+        if self.demo_mode or self.chat_model is None or not rising_queries:
+            return _fallback_terms()
+
+        trend_lines = "\n".join(f"- {q}" for q in rising_queries[:10])
+        prompt = (
+            "You are MacroScout translating Google Trends rising queries into Amazon search terms "
+            f"for a CPG importer. Retail lane: \"{category_label}\" (id: {category_id}).\n\n"
+            "Rising queries (most recent first):\n"
+            f"{trend_lines}\n\n"
+            f"Task: produce UP TO {max_terms} high-signal Amazon search strings for this lane.\n"
+            "Rules:\n"
+            "- Each search_term must be how a real shopper types it into Amazon (2-5 words).\n"
+            "- Stay inside the retail lane; do not drift into unrelated categories.\n"
+            "- Prefer product formats over brand names unless the brand is the trend driver.\n"
+            "- No duplicates; no punctuation other than spaces.\n"
+            "- Return ONLY valid JSON: an array of objects, each with keys "
+            '"category" and "search_term". "category" must be the lane label verbatim.\n'
+        )
+
+        try:
+            result = await self.chat_model.ainvoke(prompt)
+        except Exception:
+            return _fallback_terms()
+
+        text = getattr(result, "content", None) or getattr(result, "text", None) or str(result)
+        payload = self._extract_json(text if isinstance(text, str) else str(text), default=[])
+        if not isinstance(payload, list):
+            return _fallback_terms()
+
+        terms: list[dict[str, str]] = []
+        emitted: set[str] = set()
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            term = str(item.get("search_term") or "").strip()
+            if not term:
+                continue
+            key = term.lower()
+            if key in emitted:
+                continue
+            emitted.add(key)
+            terms.append({"category": category_label, "search_term": term})
+            if len(terms) >= max(1, max_terms):
+                break
+
+        return terms or _fallback_terms()
 
     async def web_snippets(self, query: str, *, max_items: int = 8) -> list[str]:
         """

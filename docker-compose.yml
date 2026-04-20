@@ -20,6 +20,14 @@ services:
       POPSIGHT_DATABASE_URL: "postgresql://popsight:popsight@postgres:5432/popsight"
       POPSIGHT_AUTO_BOOTSTRAP_MACROS: "true"
       POPSIGHT_QDRANT_URL: "http://qdrant:6333"
+    # Bind-mount the source so edits to backend/*.py are picked up by uvicorn --reload
+    # without rebuilding the image. Only rebuild when requirements.txt or Dockerfile change.
+    # ./data is mounted so ingest (and future loaders) can read host data files directly;
+    # langgraph-checkpoints.sqlite lives here too and is .gitignore'd.
+    volumes:
+      - ./backend:/app/backend
+      - ./data:/app/data
+    command: ["python", "-m", "uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/backend"]
     depends_on:
       postgres:
         condition: service_healthy

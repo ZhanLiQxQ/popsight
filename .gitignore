@@ -8,7 +8,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .tools/
-data/*.db
-data/*.sqlite
+data/*
+!data/.gitkeep
 .env*
 !.env.example

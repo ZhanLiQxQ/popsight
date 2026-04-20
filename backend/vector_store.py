@@ -33,7 +33,8 @@ class VectorStore:
         if not settings.gemini_api_key:
             return False
         if self._qdrant is None:
-            self._qdrant = QdrantClient(url=settings.qdrant_url, timeout=5)
+            # check_compatibility=False silences the v1.17 client vs v1.14 server warning.
+            self._qdrant = QdrantClient(url=settings.qdrant_url, timeout=5, check_compatibility=False)
         if self._genai is None:
             self._genai = genai.Client(api_key=settings.gemini_api_key)
         return True
@@ -48,18 +49,21 @@ class VectorStore:
             if not self._connect():
                 return ""
             vec = self._embed(query)
-            hits = self._qdrant.search(
+            # qdrant-client >=1.12 replaced .search() with .query_points().
+            response = self._qdrant.query_points(
                 collection_name=COLLECTION_NAME,
-                query_vector=vec,
+                query=vec,
                 limit=limit,
             )
+            hits = response.points
             if not hits:
                 return ""
             return "\n".join(
                 f"[{h.payload.get('source', 'doc')}] {h.payload.get('content', '')}"
                 for h in hits
             )
-        except Exception:
+        except Exception as exc:
+            print(f"[vector_store] search failed: {exc!r}")
             return ""
 
 

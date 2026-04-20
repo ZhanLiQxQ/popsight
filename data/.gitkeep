@@ -1,0 +1,7 @@
+# Business data files (PoP CSVs/XLSX/PDF) are gitignored.
+# Drop the following files here locally before running `python -m backend.ingest`:
+#   - POP_SalesTransactionHistory.csv
+#   - POP_VendorMaster.xlsx
+#   - POP_PurchaseOrderHistory.XLSX
+#   - POP_InternalTransferHistory.XLSX
+#   - POP_Catalog_2024.pdf

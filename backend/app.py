@@ -245,6 +245,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
 @app.post("/api/memory", response_model=SaveMemoryResponse)
 async def save_memory(request: SaveMemoryRequest) -> SaveMemoryResponse:
+    pinned = (
+        request.pinned
+        if request.pinned is not None
+        else request.kind in {"user_preference", "decision", "product_insight"}
+    )
     memory = repository.add_memory(
         user_id=request.userId,
         kind=request.kind,
@@ -252,7 +257,7 @@ async def save_memory(request: SaveMemoryRequest) -> SaveMemoryResponse:
         content=request.content,
         source_conversation_id=request.conversationId,
         source_scan_session_id=request.scanSessionId,
-        pinned=request.kind in {"user_preference", "decision"},
+        pinned=pinned,
     )
     repository.add_agent_log(
         user_id=request.userId,
@@ -261,3 +266,14 @@ async def save_memory(request: SaveMemoryRequest) -> SaveMemoryResponse:
         log_type="success",
     )
     return SaveMemoryResponse(memory=memory, memories=repository.list_memories(request.userId))
+
+
+@app.delete("/api/memory/{memory_id}")
+async def delete_memory(memory_id: str, userId: str = "default-user") -> dict:
+    deleted = repository.delete_memory(memory_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {
+        "deleted": True,
+        "memories": [m.model_dump(mode="json") for m in repository.list_memories(userId)],
+    }

@@ -3,21 +3,20 @@ import type { ReactNode } from 'react';
 import {
   Blocks,
   BookOpen,
-  Brain,
+  Bookmark,
+  BookmarkCheck,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock3,
-  Database,
   LayoutDashboard,
   MessageSquare,
   Pin,
   Radar,
   RefreshCw,
   Sparkles,
-  Target,
-  TrendingUp,
-  Truck,
+  Star,
+  Trash2,
   X,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
@@ -34,7 +33,7 @@ import {
   ScanSession,
   Trend,
 } from './types';
-import { chatWithAgent, getAgentAnalysis, getBootstrap, saveMemory } from './lib/gemini';
+import { chatWithAgent, deleteMemory, getAgentAnalysis, getBootstrap, saveMemory } from './lib/gemini';
 import {
   DISCOVERY_LANE_OPTIONS,
   buildTrendyProducts,
@@ -487,10 +486,73 @@ function App() {
     }
   };
 
+  const favoriteTag = (product: TrendyProduct) => `[favorite:trendy_product:${product.id}]`;
+  const findFavoriteMemory = (product: TrendyProduct): LongTermMemoryItem | undefined =>
+    longTermMemories.find((m) => m.content.startsWith(favoriteTag(product)));
+  const isProductFavorited = (product: TrendyProduct) => Boolean(findFavoriteMemory(product));
+
+  const buildFavoriteContent = (product: TrendyProduct) => {
+    const lines = [
+      favoriteTag(product),
+      `Product: ${product.product_name}`,
+      `Lane: ${product.category}`,
+      `Priority: ${product.priority} (rank_score ${product.rank_score.toFixed(2)})`,
+    ];
+    if (product.item_price != null) lines.push(`Price: $${product.item_price.toFixed(2)}`);
+    if (product.item_rating != null) lines.push(`Rating: ★${product.item_rating.toFixed(1)}`);
+    if (product.external_sold_quantity) lines.push(`Sold: ${product.external_sold_quantity.toLocaleString()}`);
+    if (product.supplier) {
+      lines.push(`Supplier: ${product.supplier}${product.supplier_region ? ` (${product.supplier_region})` : ''}`);
+    }
+    if (product.reason) lines.push(`Why: ${product.reason.slice(0, 400)}`);
+    return lines.join('\n');
+  };
+
+  const handleToggleFavorite = async (product: TrendyProduct) => {
+    const existing = findFavoriteMemory(product);
+    if (existing) {
+      try {
+        const response = await deleteMemory(existing.id);
+        setLongTermMemories(response.memories);
+        addAgentLog('Strategist', `Removed from favorites: ${product.product_name}`, 'info');
+      } catch (error) {
+        console.error(error);
+        addAgentLog('Strategist', 'Failed to remove favorite.', 'error');
+      }
+      return;
+    }
+    try {
+      const response = await saveMemory({
+        conversationId: activeConversationId,
+        scanSessionId: currentScanId,
+        kind: 'product_insight',
+        title: product.product_name,
+        content: buildFavoriteContent(product),
+        pinned: true,
+      });
+      setLongTermMemories(response.memories);
+      addAgentLog('Strategist', `Saved to favorites: ${product.product_name}`, 'success');
+    } catch (error) {
+      console.error(error);
+      addAgentLog('Strategist', 'Failed to save favorite.', 'error');
+    }
+  };
+
+  const handleDeleteMemory = async (memoryId: string) => {
+    try {
+      const response = await deleteMemory(memoryId);
+      setLongTermMemories(response.memories);
+      addAgentLog('Strategist', 'Removed saved item.', 'info');
+    } catch (error) {
+      console.error(error);
+      addAgentLog('Strategist', 'Failed to delete saved item.', 'error');
+    }
+  };
+
   const navItems: { id: AppView; label: string; icon: typeof LayoutDashboard; helper: string }[] = [
     { id: 'workspace', label: 'Workspace', icon: LayoutDashboard, helper: 'Search + results + chat' },
     { id: 'conversations', label: 'Conversations', icon: MessageSquare, helper: 'Stored threads' },
-    { id: 'memory', label: 'Memory', icon: Brain, helper: 'Long-term knowledge' },
+    { id: 'memory', label: 'Saved', icon: Bookmark, helper: 'Starred items' },
     { id: 'agents', label: 'Agent Status', icon: Blocks, helper: 'Detailed runtime state' },
   ];
 
@@ -591,22 +653,6 @@ function App() {
                 </p>
               </div>
 
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <p className="text-xs uppercase tracking-[0.2em] text-white/45">Memory split</p>
-                  <Database className="h-3.5 w-3.5 text-white/35" />
-                </div>
-                <div className="space-y-3 text-xs">
-                  <div>
-                    <p className="text-white/80">Short-term</p>
-                    <p className="text-white/45">Current scan, selected product, recent messages</p>
-                  </div>
-                  <div>
-                    <p className="text-white/80">Long-term</p>
-                    <p className="text-white/45">Pinned preferences, reusable insights, decisions</p>
-                  </div>
-                </div>
-              </div>
             </div>
           </>
         )}
@@ -620,7 +666,7 @@ function App() {
                 <h1 className="text-2xl font-semibold tracking-tight">
                   {activeView === 'workspace' && 'Sourcing Workspace'}
                   {activeView === 'conversations' && 'Conversation History'}
-                  {activeView === 'memory' && 'Memory Center'}
+                  {activeView === 'memory' && 'Saved Items'}
                   {activeView === 'agents' && 'Agent Status'}
                 </h1>
                 <p className="mt-1 text-sm text-[var(--ink-soft)]">
@@ -629,7 +675,7 @@ function App() {
                   {activeView === 'conversations' &&
                     'Every follow-up thread is saved so users can return without losing context.'}
                   {activeView === 'memory' &&
-                    'Only durable business knowledge belongs in long-term memory; everything else stays session-scoped.'}
+                    'Items you starred from discovery lanes or chat. These are also injected into follow-up chat as context.'}
                   {activeView === 'agents' &&
                     'Operational detail has been moved out of the main page into a dedicated runtime panel.'}
                 </p>
@@ -721,6 +767,7 @@ function App() {
                                 key={product.id}
                                 product={product}
                                 isActive={selectedTrendyId === product.id}
+                                isFavorited={isProductFavorited(product)}
                                 onSelect={() =>
                                   setSelectedTrendyId((prev) =>
                                     prev === product.id ? null : product.id,
@@ -730,6 +777,7 @@ function App() {
                                   setSelectedTrendyId(product.id);
                                   setDetailTrendyId(product.id);
                                 }}
+                                onToggleFavorite={() => handleToggleFavorite(product)}
                               />
                             ))}
                           </div>
@@ -849,73 +897,65 @@ function App() {
             )}
 
             {activeView === 'memory' && (
-              <div className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
-                <div className="rounded-[28px] border border-[var(--line-soft)] bg-[var(--surface)] p-6">
-                  <p className="text-xs uppercase tracking-[0.24em] text-[var(--ink-faint)]">Memory design guidance</p>
-                  <div className="mt-4 space-y-4 text-sm leading-7 text-[var(--ink-soft)]">
-                    <div className="rounded-3xl border border-[var(--line-soft)] bg-white p-5">
-                      <p className="mb-2 font-semibold text-[var(--ink-strong)]">Short-term memory</p>
-                      <p>
-                        Use it for the current scan, selected product or supplier, and the most recent chat turns.
-                        This is the right place for "based on these results, compare the top 3" style follow-up.
-                      </p>
-                    </div>
-                    <div className="rounded-3xl border border-[var(--line-soft)] bg-white p-5">
-                      <p className="mb-2 font-semibold text-[var(--ink-strong)]">Long-term memory</p>
-                      <p>
-                        Save only durable facts: buyer preferences, target price bands, repeated sourcing rules,
-                        approved suppliers, and confirmed strategic decisions. Raw chat logs should not all be
-                        promoted here.
-                      </p>
-                    </div>
-                    <div className="rounded-3xl border border-[var(--line-soft)] bg-white p-5">
-                      <p className="mb-2 font-semibold text-[var(--ink-strong)]">Chat history</p>
-                      <p>
-                        Chat history should be stored as conversation records. It supports recall and auditability,
-                        but it is neither pure short-term nor pure long-term memory. Think of it as the source layer
-                        from which you selectively extract long-term memory.
-                      </p>
-                    </div>
-                  </div>
+              <div className="rounded-[28px] border border-[var(--line-soft)] bg-[var(--surface)] p-6">
+                <div className="mb-4 flex items-center justify-between">
+                  <p className="text-xs uppercase tracking-[0.24em] text-[var(--ink-faint)]">
+                    Saved items · {longTermMemories.length}
+                  </p>
+                  <span className="text-xs text-[var(--ink-faint)]">
+                    Starred from discovery lanes, also injected into chat context.
+                  </span>
                 </div>
 
-                <div className="rounded-[28px] border border-[var(--line-soft)] bg-[var(--surface)] p-6">
-                  <div className="mb-4 flex items-center justify-between">
-                    <p className="text-xs uppercase tracking-[0.24em] text-[var(--ink-faint)]">Saved long-term memory</p>
-                    <button
-                      onClick={() =>
-                        handleSaveMemory({
-                          kind: 'user_preference',
-                          title: 'Example preference',
-                          content: 'Prefer under-distributed Asian functional beverages with import-ready pricing.',
-                        })
-                      }
-                      className="rounded-full border border-[var(--line-soft)] px-3 py-1.5 text-xs transition hover:border-[var(--accent)]"
-                    >
-                      Add sample
-                    </button>
-                  </div>
-
-                  <div className="space-y-3">
-                    {longTermMemories.length === 0 && (
-                      <EmptyState text="Save durable insights here instead of keeping them mixed into the main dashboard." />
-                    )}
-                    {longTermMemories.map((memory) => (
-                      <div key={memory.id} className="rounded-3xl border border-[var(--line-soft)] bg-white p-5">
-                        <div className="mb-2 flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2">
-                            <span className="rounded-full bg-[var(--accent-muted)] px-2.5 py-1 text-[11px] capitalize text-[var(--accent-deep)]">
-                              {memory.kind.replace('_', ' ')}
-                            </span>
-                            {memory.pinned && <Pin className="h-3.5 w-3.5 text-[var(--accent-deep)]" />}
+                <div className="grid gap-3 md:grid-cols-2">
+                  {longTermMemories.length === 0 && (
+                    <div className="md:col-span-2">
+                      <EmptyState text="Nothing saved yet. Open a discovery lane and click the bookmark icon on a product to save it here." />
+                    </div>
+                  )}
+                  {longTermMemories.map((memory) => {
+                    const displayLines = memory.content
+                      .split('\n')
+                      .filter((line) => !line.startsWith('[favorite:'))
+                      .join('\n');
+                    return (
+                      <div
+                        key={memory.id}
+                        className="flex flex-col rounded-3xl border border-[var(--line-soft)] bg-white p-5"
+                      >
+                        <div className="mb-2 flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-base font-semibold">{memory.title}</p>
+                            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                              <span className="rounded-full bg-[var(--accent-muted)] px-2.5 py-1 text-[11px] capitalize text-[var(--accent-deep)]">
+                                {memory.kind.replace('_', ' ')}
+                              </span>
+                              {memory.pinned && (
+                                <span className="flex items-center gap-1 text-[11px] text-[var(--accent-deep)]">
+                                  <Pin className="h-3 w-3" />
+                                  pinned
+                                </span>
+                              )}
+                              <span className="text-[11px] text-[var(--ink-faint)]">
+                                {formatTime(memory.updatedAt)}
+                              </span>
+                            </div>
                           </div>
-                          <span className="text-[11px] text-[var(--ink-faint)]">{formatTime(memory.updatedAt)}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteMemory(memory.id)}
+                            title="Remove from saved"
+                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--line-soft)] bg-white text-[var(--ink-soft)] transition hover:border-red-400 hover:text-red-500"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                         </div>
-                        <p className="mb-2 text-base font-semibold">{memory.title}</p>
-                        <p className="text-sm leading-6 text-[var(--ink-soft)]">{memory.content}</p>
+                        <pre className="mt-2 whitespace-pre-wrap break-words font-sans text-sm leading-6 text-[var(--ink-soft)]">
+                          {displayLines || memory.content}
+                        </pre>
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -1015,7 +1055,7 @@ function App() {
                 label="Product"
                 value={selectedTrendy?.product_name || selectedProduct?.name || 'None'}
               />
-              <ContextChip label="Memories" value={String(longTermMemories.length)} />
+              <ContextChip label="Saved" value={String(longTermMemories.length)} />
             </div>
 
             {pinnedMemories.length > 0 && (
@@ -1106,19 +1146,36 @@ function App() {
                 </button>
               )}
               <button
-                onClick={() =>
-                  handleSaveMemory({
-                    kind: 'decision',
-                    title: selectedProduct?.name || currentScan?.topic || 'Saved decision',
-                    content:
-                      selectedProduct?.description ||
-                      currentScan?.summary ||
-                      'User manually saved the current working conclusion.',
-                  })
+                onClick={() => {
+                  if (selectedTrendy) handleToggleFavorite(selectedTrendy);
+                }}
+                disabled={!selectedTrendy}
+                title={
+                  !selectedTrendy
+                    ? 'Select a trendy product in the lane first'
+                    : isProductFavorited(selectedTrendy)
+                      ? 'Remove from saved items'
+                      : 'Save this product to your saved items'
                 }
-                className="rounded-full border border-[var(--line-soft)] px-3 py-1.5 text-xs transition hover:border-[var(--accent)]"
+                className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition ${
+                  !selectedTrendy
+                    ? 'cursor-not-allowed border-[var(--line-soft)] text-[var(--ink-faint)] opacity-50'
+                    : isProductFavorited(selectedTrendy)
+                      ? 'border-[var(--accent)] bg-[var(--accent-muted)] text-[var(--accent-deep)]'
+                      : 'border-[var(--line-soft)] hover:border-[var(--accent)]'
+                }`}
               >
-                Save current insight
+                {selectedTrendy && isProductFavorited(selectedTrendy) ? (
+                  <>
+                    <BookmarkCheck className="h-3.5 w-3.5" />
+                    Saved
+                  </>
+                ) : (
+                  <>
+                    <Star className="h-3.5 w-3.5" />
+                    Save to favorites
+                  </>
+                )}
               </button>
             </div>
 
@@ -1220,13 +1277,17 @@ const PRIORITY_BADGE: Record<TrendyProduct['priority'], string> = {
 function TrendyProductCard({
   product,
   isActive,
+  isFavorited,
   onSelect,
   onOpenDetails,
+  onToggleFavorite,
 }: {
   product: TrendyProduct;
   isActive: boolean;
+  isFavorited: boolean;
   onSelect: () => void;
   onOpenDetails: () => void;
+  onToggleFavorite: () => void;
 }) {
   const price = product.item_price != null ? `$${product.item_price.toFixed(2)}` : '—';
   const rating = product.item_rating != null ? product.item_rating.toFixed(1) : '—';
@@ -1253,11 +1314,32 @@ function TrendyProductCard({
     >
       <div className="mb-3 flex items-start justify-between gap-3">
         <p className="text-base font-semibold leading-6">{product.product_name}</p>
-        <span
-          className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${PRIORITY_BADGE[product.priority]}`}
-        >
-          {product.priority}
-        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFavorite();
+            }}
+            title={isFavorited ? 'Remove from saved' : 'Save to favorites'}
+            className={`flex h-7 w-7 items-center justify-center rounded-full border transition ${
+              isFavorited
+                ? 'border-[var(--accent)] bg-[var(--accent-muted)] text-[var(--accent-deep)]'
+                : 'border-[var(--line-soft)] bg-white text-[var(--ink-faint)] hover:border-[var(--accent)] hover:text-[var(--accent-deep)]'
+            }`}
+          >
+            {isFavorited ? (
+              <BookmarkCheck className="h-3.5 w-3.5" />
+            ) : (
+              <Bookmark className="h-3.5 w-3.5" />
+            )}
+          </button>
+          <span
+            className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${PRIORITY_BADGE[product.priority]}`}
+          >
+            {product.priority}
+          </span>
+        </div>
       </div>
       <div className="mb-3 flex flex-wrap gap-2 text-xs">
         <span className="rounded-full bg-[var(--bg-app)] px-3 py-1">{price}</span>

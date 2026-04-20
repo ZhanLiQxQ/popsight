@@ -427,6 +427,7 @@ class SaveMemoryRequest(BaseModel):
     kind: Literal["user_preference", "product_insight", "supplier_note", "decision"]
     title: str
     content: str
+    pinned: bool | None = None
 
 
 class SaveMemoryResponse(BaseModel):
