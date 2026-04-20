@@ -671,13 +671,13 @@ function App() {
                 </h1>
                 <p className="mt-1 text-sm text-[var(--ink-soft)]">
                   {activeView === 'workspace' &&
-                    'Keep the main page focused on search, results, and contextual follow-up questions.'}
+                    'Main page focused on search, results, and contextual follow-up questions.'}
                   {activeView === 'conversations' &&
                     'Every follow-up thread is saved so users can return without losing context.'}
                   {activeView === 'memory' &&
                     'Items you starred from discovery lanes or chat. These are also injected into follow-up chat as context.'}
                   {activeView === 'agents' &&
-                    'Operational detail has been moved out of the main page into a dedicated runtime panel.'}
+                    'Dedicated runtime panel for operational detail.'}
                 </p>
               </div>
 

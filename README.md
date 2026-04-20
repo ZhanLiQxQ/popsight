@@ -1,134 +1,120 @@
 # PopSight Agent Intelligence
 
-This project is now a full-stack sourcing workspace with:
+A full-stack CPG sourcing workspace built for Prince of Peace (PoP), an Asia-forward distributor. Three AI modules work together: product discovery, trend/supply analysis, and a RAG-powered sourcing copilot.
+
+## Stack
 
 - React + Vite frontend
 - FastAPI backend
-- LangGraph `1.x` orchestration for scan and chat flows
-- LangChain `create_agent` chat runtime
-- Google Gemini model integration
-- PostgreSQL persistence for scans, messages, memories, and logs (SQLite fallback supported for local-only runs)
-- MCP tool server for scan context, memory retrieval, and memory writes
+- LangGraph orchestration for scan and chat flows
+- Google Gemini (chat + embeddings) or local Ollama for chat
+- PostgreSQL + pgvector for persistence
+- Qdrant for vector search (RAG over PoP catalog, specs, vendors, inventory, sales history)
+- SerpAPI for Google Trends and Amazon product search
 
-## Architecture
+## Modules
 
-### Main product flows
+### Module 1 — Product Fetch (Jane)
+`POST /api/pipeline/amazon-ingest`
+Fetches Amazon product data via SerpAPI, runs GLiNER NER for compliance signals, and compresses results.
 
-1. `POST /api/scan`
-   - Runs a LangGraph scan flow.
-   - Uses Gemini with Google Search grounding to produce structured market results.
-   - Persists `scan_sessions`, `products`, `trends`, `manufacturers`, and `agent_logs`.
-   - Links the scan to a conversation thread.
+### Module 2 — Discovery Pipeline (Penny)
+`POST /api/pipeline/macro-cold-start`
 
-2. `POST /api/chat`
-   - Runs a LangGraph chat flow.
-   - Uses LangChain `create_agent` on top of Gemini.
-   - Connects the agent to MCP tools for:
-     - current scan retrieval
-     - product lookup
-     - conversation history retrieval
-     - long-term memory search
-     - long-term memory persistence
-   - Persists user and assistant messages in SQLite.
+Runs 6 fixed retail lanes through a 7-node LangGraph pipeline. Each lane executes:
 
-3. `POST /api/memory`
-   - Saves durable long-term memory entries explicitly.
+| Node | Agent | What it does |
+|------|-------|--------------|
+| 0 | `fetch_market_signals` | Fetches Google Trends RELATED_QUERIES (rising) per lane |
+| 1 | `MacroScout_Agent` | Interprets trend signals; skips lanes with no usable data |
+| 2 | `Market_Crawler` | Pulls Amazon top-5-by-reviews per lane via SerpAPI |
+| 3 | `NLP_Compressor` | Compresses products; runs FDA check + optional GLiNER NER |
+| 4 | `Trend_Analyst_Agent` | Ranks SKUs by traction score |
+| 5 | `Supply_Planner_Agent` | Produces actionable sourcing rows |
+| 6 | *(summary)* | Generates executive summary in Markdown |
 
-### Memory design
+### Module 3 — Sourcing Copilot (Vinny)
+`POST /api/scan` + `POST /api/chat`
 
-- Short-term memory:
-  - current scan
-  - selected product/trend/supplier
-  - recent conversation turns
-  - LangGraph thread checkpoint state
+- **Scan**: Gemini with Google Search grounding produces structured market results (trends, products, manufacturers). Persists to PostgreSQL and links to a conversation thread.
+- **Chat**: LangGraph agent with tools for scan context, product lookup, conversation history, long-term memory search/save/delete, and Qdrant RAG over PoP documents.
 
-- Long-term memory:
-  - confirmed user preferences
-  - durable sourcing heuristics
-  - supplier notes
-  - strategic decisions
+## Memory design
 
-- Conversation history:
-  - stored separately from long-term memory
-  - acts as the audit and recall layer
-  - can be promoted into long-term memory selectively
-
-## Data model
-
-Tables:
-
-- `scan_sessions`
-- `trends`
-- `products`
-- `manufacturers`
-- `conversations`
-- `messages`
-- `memory_items`
-- `agent_logs`
-- `macro_suggestions`
+- **Short-term**: current scan, selected product, recent conversation turns, LangGraph checkpoint state
+- **Long-term**: user preferences, sourcing heuristics, supplier notes, strategic decisions (pinned items always surface in chat)
+- **RAG**: PoP catalog PDF, item specs, vendor master, inventory, and sales history — chunked and stored in Qdrant
 
 ## Environment
 
-Create `.env.local` from `.env.example` and set:
+Copy `.env.example` to `.env` and fill in:
 
 ```bash
-GEMINI_API_KEY=...
-GOOGLE_API_KEY=...
-APP_URL=http://localhost:8000
+# Required
+GEMINI_API_KEY=...          # or GOOGLE_API_KEY (same value works for both)
+SERPAPI_API_KEY=...
+
+# Models (defaults shown)
+POPSIGHT_CHAT_MODEL=gemini-2.5-flash
+POPSIGHT_SCAN_MODEL=gemini-2.5-flash
+
+# Optional: use a local Ollama model for chat instead of Gemini
+# POPSIGHT_OLLAMA_URL=http://host.docker.internal:11434
+# POPSIGHT_CHAT_MODEL=llama3.2:3b
 ```
 
-`GOOGLE_API_KEY` can be the same value as `GEMINI_API_KEY`.
-
-## Run locally
-
-### Backend
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python -m uvicorn backend.app:app --reload --port 8000
-```
-
-### Docker (recommended)
+## Run with Docker (recommended)
 
 ```bash
 docker compose up --build
 ```
 
 This brings up:
-
+- `frontend` on `http://localhost:3000`
 - `backend` on `http://localhost:8000`
 - PostgreSQL (+pgvector) on port `5432`
-- Qdrant vector DB on `http://localhost:6333`
+- Qdrant on `http://localhost:6333`
 
-Notes:
+### Ingest PoP documents into Qdrant (one-time)
 
-- `POPSIGHT_AUTO_BOOTSTRAP_MACROS` defaults to `false` in Docker so the app won't implicitly write "starter" data during `/api/bootstrap`.
+After the stack is up, run the ingestion script to load the PoP catalog, item specs, vendor master, inventory, and sales history into Qdrant for RAG:
+
+```bash
+docker compose exec backend python -m backend.ingest
+```
+
+This processes ~371 chunks. It uses the Gemini embedding API (free tier: 100 items/min) so takes a few minutes. Re-run any time source data files in `data/` change.
+
+## Run locally (without Docker)
+
+### Backend
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate       # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn backend.app:app --reload --port 8000
+```
+
+Requires a running PostgreSQL instance (or leave `POPSIGHT_DATABASE_URL` empty to use SQLite at `data/popsight.db`) and Qdrant at `http://localhost:6333`.
 
 ### Frontend
-
-If you have Node installed globally:
 
 ```bash
 npm install
 npm run dev
 ```
 
-If not, you can use the project-local runtime this task set up in `.tools/node`:
-
-```bash
-PATH="$(pwd)/.tools/node/bin:$PATH" npm install
-PATH="$(pwd)/.tools/node/bin:$PATH" npm run dev
-```
-
-The frontend proxies `/api/*` to `http://localhost:8000` by default.
+The frontend proxies `/api/*` to `http://localhost:8000`.
 
 ## Key files
 
-- `backend/app.py`: FastAPI routes
-- `backend/graphs.py`: LangGraph scan/chat orchestration
-- `backend/mcp_server.py`: MCP tool server
-- `backend/repository.py`: SQLite persistence
-- `backend/llm.py`: Gemini integrations
-- `src/App.tsx`: product UI
-- `src/lib/gemini.ts`: frontend API client
+- `backend/app.py` — FastAPI routes
+- `backend/graphs.py` — LangGraph scan/chat orchestration, memory retrieval, RAG injection
+- `backend/ingest.py` — one-time PoP document ingestion into Qdrant
+- `backend/vector_store.py` — Qdrant search helper (used by chat on every turn)
+- `backend/discovery_graph.py` — Module 2 discovery pipeline
+- `backend/llm.py` — Gemini + Ollama client initialization
+- `backend/config.py` — all environment variable settings
+- `backend/repository_postgres.py` / `repository_sqlite.py` — persistence layer
+- `src/App.tsx` — frontend root
