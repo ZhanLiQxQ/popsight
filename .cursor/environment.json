@@ -1,0 +1,19 @@
+{
+  "name": "PopSight Agent Intelligence",
+  "user": "ubuntu",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "backend",
+      "command": "source .venv/bin/activate && python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload --reload-dir backend"
+    },
+    {
+      "name": "frontend",
+      "command": "npm run dev:docker"
+    }
+  ],
+  "ports": [
+    { "name": "backend", "port": 8000 },
+    { "name": "frontend", "port": 3000 }
+  ]
+}
